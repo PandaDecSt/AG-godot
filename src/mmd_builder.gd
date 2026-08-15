@@ -304,6 +304,14 @@ func _build_material(m: Dictionary, model: Dictionary, model_dir: String, light_
 	var toon: Texture2D = _resolve_toon(m, model, model_dir)
 	mat.set_shader_parameter("toon_tex", toon)
 
+	# ---- reze 预设系统：按材质名自动分类角色并套用 per-role 预设 ----
+	# 先保留 PMX 自带 toon（_resolve_toon 已设置），apply_role 仅在角色命中时覆盖 toon_tex。
+	# 默认 look pack 取 AG（reze 引擎自动分组默认）。运行时可由 mmd_importer HUD 切换。
+	var _mp = (load("res://src/material_presets.gd") as Script).new()
+	var _role: String = _mp.classify_role(m["name"])
+	_mp.apply_role(mat, _mp.default_pack(), _role)
+	print("MATPRESET %s -> role=%s pack=ag" % [m["name"], _role])
+
 	var sphere_mode: int = m["sphereMode"]
 	if sphere_mode != 0 and m["sphereTextureIndex"] >= 0 and m["sphereTextureIndex"] < model["textures"].size():
 		var sph: Texture2D = _resolve_texture(model["textures"][m["sphereTextureIndex"]], model_dir)

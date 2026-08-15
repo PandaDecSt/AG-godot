@@ -69,6 +69,20 @@ uniform float exposure = 1.0;
 uniform float saturation = 1.15;
 uniform float contrast = 1.08;
 uniform float toon_edge_aa = 1.0;       // toon 终止线抗闪：1=开(屏空间超采样平滑明暗交界、消火花噪点)，0=关(原始线性采样)
+
+// ===== reze 预设系统接入（per-material 角色预设 + look pack + grade）=====
+// toon_tex 现在是【彩色三段色阶】贴图（对齐 reze ramp_linear_3 / ramp_cardinal）：
+//   阴影端色调 → 中间调 → 受光端白。乘到 baseColor 上，忠实还原 reze 每角色的独立明暗色。
+// 旧版只取 .r 灰度；新版取 .rgb 全彩。未套预设时回退为中性灰度色阶（视觉不变）。
+uniform float mat_saturation = 1.0;     // per-material 饱和度（reze hue_sat.saturation）
+uniform float mat_value = 1.0;         // per-material 明度倍率（reze hue_sat.value）
+uniform float sphere_strength = 1.0;   // SPHERE 强度倍率（reze sphere_map.strength）
+uniform vec3 world_color = vec3(1.0);  // 全局世界色（reze look pack world）：乘到环境光，染遍所有表面
+uniform int tonemap_mode = 1;          // 0=standard(直出，对齐 WuWa) 1=filmic(对齐 AG，Hable 曲线)
+// grade 分色调（split-tone，对齐 reze grades.json 的 shadows/highlights 色轮）：
+//   暗部染 grade_shadow_tint，亮部染 grade_highlight_tint，中间按亮度插值。
+uniform vec3 grade_shadow_tint = vec3(0.0);
+uniform vec3 grade_highlight_tint = vec3(0.0);
 // 注意：Godot GLSL 内置常量 PI/TAU/E 不可重定义，故原版 Hable 参数 A B C D E F 全部小写化（a,b,c,d,e,f）。
 vec3 filmicTonemap(vec3 x) {
 	float a = 0.22; float b = 0.30; float c = 0.10; float d = 0.20; float e = 0.01; float f = 0.30;
@@ -131,7 +145,12 @@ void light() {
 	vec3 lc = LIGHT_COLOR / PI;            // 对齐原版 lightColor（energy*color，去掉内置 π）
 
 	vec4 tex = use_albedo ? texture(albedo_tex, UV) : vec4(1.0);
-	vec3 baseColor = tex.rgb * base_tint;
+	vec3 baseColor = tex.rgb * base_tint * mat_value;
+	// per-material 饱和度（reze hue_sat.saturation）：在乘色阶前先按亮度去饱和/加饱和。
+	{
+		float l = dot(baseColor, vec3(0.299, 0.587, 0.114));
+		baseColor = mix(vec3(l), baseColor, clamp(mat_saturation, 0.0, 3.0));
+	}
 
 	// ---- 调试模式：直接输出固定颜色，不走光照合成 ----
 	if (debug_mode == 1) {
@@ -159,14 +178,14 @@ void light() {
 	// 真实 toon 贴图暗端可能近 0，背光面只剩 ambient，保底 0.25 避免死黑。
 	// toon 终止线抗闪（对齐 reze ramp_constant_edge_aa）：对 toon 坐标做屏空间超采样，
 	// 用 fwidth(toonT) 估出 1 像素的 toon 坐标跨度，在终止线两侧各取半步取平均 → 平滑闪烁的明暗交界。
-	float toonShade;
+	vec3 toonShade;
 	if (toon_edge_aa > 0.5) {
 		float aaw = max(fwidth(toonT), 1e-4) * 1.5;
-		float s0 = texture(toon_tex, vec2(toonT - aaw * 0.5, 0.5)).r;
-		float s1 = texture(toon_tex, vec2(toonT + aaw * 0.5, 0.5)).r;
-		toonShade = max(mix(s0, s1, 0.5), 0.25);
+		vec3 s0 = texture(toon_tex, vec2(toonT - aaw * 0.5, 0.5)).rgb;
+		vec3 s1 = texture(toon_tex, vec2(toonT + aaw * 0.5, 0.5)).rgb;
+		toonShade = max(mix(s0, s1, 0.5), vec3(0.25));
 	} else {
-		toonShade = max(texture(toon_tex, vec2(toonT, 0.5)).r, 0.25);
+		toonShade = max(texture(toon_tex, vec2(toonT, 0.5)).rgb, vec3(0.25));
 	}
 
 	vec3 nprDiffuse = baseColor * toonShade;                                // TOON：baseColor * toonShade
@@ -178,12 +197,12 @@ void light() {
 	vec3 sphereAdd = vec3(0.0);
 	if (use_sphere) {
 		vec2 suv = (sphere_mode > 1.5) ? UV : (N.xy * 0.5 + 0.5);
-		sphereAdd = texture(sphere_tex, suv).rgb * baseColor;
+		sphereAdd = texture(sphere_tex, suv).rgb * baseColor * sphere_strength;
 	}
 	vec3 emis = baseColor * emission_strength;
 
 	// ---- 图层栈：按 layer_order 顺序逐层加性合成（对齐原版 main-fs:172）----
-	vec3 color = baseColor * ambient_color;          // 基础色（环境光）
+	vec3 color = baseColor * ambient_color * world_color;          // 基础色（环境光 × 世界色）
 	// 保底：所有图层被关闭(layer_mask==0)时，至少显示 baseColor 本身，避免整面纯黑无法调试。
 	if (layer_mask == 0) {
 		color += baseColor * 0.5;
@@ -209,8 +228,13 @@ void light() {
 
 		color *= mix(0.55, 1.0, vis);   // 阴影区整体再压暗，强化自阴影对比（无阴影区不变）
 		vec3 hdr = color * exposure;
-		vec3 ldr = filmicTonemap(hdr);   // filmic 色调映射 → [0,1]
-		DIFFUSE_LIGHT = gradeColor(ldr); // 色彩分级（饱和度/对比度）→ 动漫透亮感
+		// 色调映射：filmic(Hable 曲线，对齐 AG) 或 standard(直出，对齐 WuWa)。
+		vec3 ldr = (tonemap_mode == 1) ? filmicTonemap(hdr) : clamp(hdr, vec3(0.0), vec3(1.0));
+		vec3 graded = gradeColor(ldr);   // 色彩分级（饱和度/对比度）→ 动漫透亮感
+		// grade 分色调：暗部→grade_shadow_tint，亮部→grade_highlight_tint（对齐 reze grades.json）。
+		float gl = dot(graded, vec3(0.2126, 0.7152, 0.0722));
+		graded += mix(grade_shadow_tint, grade_highlight_tint, smoothstep(0.2, 0.85, gl));
+		DIFFUSE_LIGHT = max(graded, vec3(0.0));
 		SPECULAR_LIGHT = vec3(0.0);
 	}
 }

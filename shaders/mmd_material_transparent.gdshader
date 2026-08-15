@@ -37,6 +37,14 @@ uniform float exposure = 1.0;
 // 色彩分级（对齐原版 pmx-tonemapper.ts:63 gradeColor）：饱和度 + 对比度。详见 mmd_material.gdshader。
 uniform float saturation = 1.15;
 uniform float contrast = 1.08;
+// ===== reze 预设系统接入（同 mmd_material.gdshader）=====
+uniform float mat_saturation = 1.0;
+uniform float mat_value = 1.0;
+uniform float sphere_strength = 1.0;
+uniform vec3 world_color = vec3(1.0);
+uniform int tonemap_mode = 1;
+uniform vec3 grade_shadow_tint = vec3(0.0);
+uniform vec3 grade_highlight_tint = vec3(0.0);
 // 注意：Godot GLSL 内置常量 PI/TAU/E 不可重定义，故原版 Hable 参数 A B C D E F 全部小写化（a,b,c,d,e,f）。
 vec3 filmicTonemap(vec3 x) {
 	float a = 0.22; float b = 0.30; float c = 0.10; float d = 0.20; float e = 0.01; float f = 0.30;
@@ -89,7 +97,11 @@ void light() {
 	vec3 lc = LIGHT_COLOR / PI;
 
 	vec4 tex = use_albedo ? texture(albedo_tex, UV) : vec4(1.0);
-	vec3 baseColor = tex.rgb * base_tint;
+	vec3 baseColor = tex.rgb * base_tint * mat_value;
+	{
+		float l = dot(baseColor, vec3(0.299, 0.587, 0.114));
+		baseColor = mix(vec3(l), baseColor, clamp(mat_saturation, 0.0, 3.0));
+	}
 
 	// ---- 调试模式：直接输出固定颜色，不走光照合成 ----
 	if (debug_mode == 1) {
@@ -107,7 +119,7 @@ void light() {
 		vis = min(vis, smoothstep(0.0, 0.35, ndl));
 		float shadowedNL = min(ndl, vis * 2.0 - 1.0);
 		float toonT = clamp(shadowedNL * 0.5 + 0.5, 0.0, 1.0);
-		float toonShade = max(texture(toon_tex, vec2(toonT, 0.5)).r, 0.25);
+		vec3 toonShade = max(texture(toon_tex, vec2(toonT, 0.5)).rgb, vec3(0.25));
 
 		vec3 nprDiffuse = baseColor * toonShade;
 		vec3 H = normalize(V + L);
@@ -117,11 +129,11 @@ void light() {
 		vec3 sphereAdd = vec3(0.0);
 		if (use_sphere) {
 			vec2 suv = (sphere_mode > 1.5) ? UV : (N.xy * 0.5 + 0.5);
-			sphereAdd = texture(sphere_tex, suv).rgb * baseColor;
+			sphereAdd = texture(sphere_tex, suv).rgb * baseColor * sphere_strength;
 		}
 		vec3 emis = baseColor * emission_strength;
 
-		vec3 color = baseColor * ambient_color;
+		vec3 color = baseColor * ambient_color * world_color;
 		for (int i = 0; i < 5; i++) {
 			int id = layer_order[i];
 			int bit = (1 << id);
@@ -141,8 +153,11 @@ void light() {
 			}
 		}
 		vec3 hdr = color * exposure;
-		vec3 ldr = filmicTonemap(hdr);
-		DIFFUSE_LIGHT = gradeColor(ldr);
+		vec3 ldr = (tonemap_mode == 1) ? filmicTonemap(hdr) : clamp(hdr, vec3(0.0), vec3(1.0));
+		vec3 graded = gradeColor(ldr);
+		float gl = dot(graded, vec3(0.2126, 0.7152, 0.0722));
+		graded += mix(grade_shadow_tint, grade_highlight_tint, smoothstep(0.2, 0.85, gl));
+		DIFFUSE_LIGHT = max(graded, vec3(0.0));
 		SPECULAR_LIGHT = vec3(0.0);
 	}
 }

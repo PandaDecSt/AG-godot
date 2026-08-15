@@ -32,6 +32,11 @@ var _chk_ik: CheckBox = null
 var _chk_append: CheckBox = null
 var _chk_morph: CheckBox = null
 
+# reze 预设系统：当前 look pack / grade 与预设模块实例（运行态）
+var _mp_presets = null          # MaterialPresets 实例（运行态动态加载，避免依赖全局类表）
+var _cur_pack: String = "ag"    # 当前 look pack（ag / wuwa）
+var _cur_grade: String = "Neutral"
+
 
 func _ready() -> void:
 	print("=== MMD build start ===")
@@ -76,6 +81,14 @@ func _ready() -> void:
 	for mat in _mats:
 		if mat != null and mat.next_pass != null:
 			_outline_pairs.append([mat, mat.next_pass])
+
+	# ---- reze 预设系统：初始化模块实例并套用默认 look pack(AG) + grade(Neutral) ----
+	# 设置全局 uniform（exposure/tonemap_mode/world_color/saturation/contrast/grade 分色调），
+	# 让角色一进场景就是 reze AG 风格（filmic@0.6 + 品红世界色），而非着色器硬编码默认值。
+	_mp_presets = (load("res://src/material_presets.gd") as Script).new()
+	_cur_pack = _mp_presets.default_pack()
+	_cur_grade = "Neutral"
+	_apply_preset(_cur_pack, _cur_grade)
 
 	# 「图层栈」控制面板 LayerController 是 main.tscn 里与 ModelRoot 平级的静态节点
 	# （直接挂 Main 下，避免作为 ModelRoot 子节点时 Godot 实例化报
@@ -187,6 +200,7 @@ func _ready() -> void:
 	# 运行态 HUD：屏幕左下角拖滑块即可实时调描边粗细（材质运行态才创建，编辑态拖 Inspector 不生效）
 	_add_outline_hud()
 	_add_motion_hud()
+	_add_preset_hud()   # reze 预设：Look pack / Grade 切换（AG/WuWa + 6 套 grade）
 
 
 # ---- 动作装配 ----
@@ -411,3 +425,58 @@ func _mk_check(text: String, pressed: bool, cb: Callable) -> CheckBox:
 	c.button_pressed = pressed
 	c.toggled.connect(cb)
 	return c
+
+
+# ---- reze 预设：套用当前 look pack + grade 到全部材质（全局 uniform 逐材质写入）----
+func _apply_preset(pack: String, grade: String) -> void:
+	_cur_pack = pack
+	_cur_grade = grade
+	if _mp_presets == null:
+		return
+	_mp_presets.apply_look(_mats, pack, grade)
+	print("PRESET apply_look pack=%s grade=%s  (材质数=%d)" % [pack, grade, _mats.size()])
+
+
+# ---- reze 预设 HUD（左下角）：Look pack（AG/WuWa）与 Grade（6 套）实时切换 ----
+# 对齐 reze-design 的「对不同材质有具体的预设图方案」：AG/WuWa 两套整体风格 +
+# 6 套 color grade，运行时一键切换，无需重开场景。
+func _add_preset_hud() -> void:
+	if _mp_presets == null:
+		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
+	var layer := CanvasLayer.new()
+	layer.layer = 128
+	var box := VBoxContainer.new()
+	box.position = Vector2(16, 360)
+	box.custom_minimum_size = Vector2(240, 0)
+	layer.add_child(box)
+
+	var head := Label.new()
+	head.text = "reze 预设  Look / Grade"
+	box.add_child(head)
+
+	# Look pack 下拉（ag / wuwa）
+	var looks: Array = _mp_presets.look_list()
+	var look_btn := OptionButton.new()
+	for p in looks:
+		look_btn.add_item(p)
+	look_btn.selected = maxi(0, looks.find(_cur_pack))
+	box.add_child(look_btn)
+	look_btn.item_selected.connect(func(idx: int):
+		if idx < 0 or idx >= looks.size():
+			return
+		_apply_preset(looks[idx], _cur_grade))
+
+	# Grade 下拉（6 套）
+	var grades: Array = _mp_presets.grade_list()
+	var grade_btn := OptionButton.new()
+	for g in grades:
+		grade_btn.add_item(g)
+	grade_btn.selected = maxi(0, grades.find(_cur_grade))
+	box.add_child(grade_btn)
+	grade_btn.item_selected.connect(func(idx: int):
+		if idx < 0 or idx >= grades.size():
+			return
+		_apply_preset(_cur_pack, grades[idx]))
+
+	get_tree().root.call_deferred("add_child", layer)
+	print("HUD: 左下角已添加「reze 预设」面板（Look pack:%s / Grade:%s 切换）" % [_cur_pack, _cur_grade])

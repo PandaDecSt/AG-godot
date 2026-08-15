@@ -46,9 +46,6 @@ script = ExtResource("1_mmdimporter")
 
 [node name="LayerController" type="Node" parent="." unique_id=1732165456]
 script = ExtResource("3_mmdlayers")
-dof_focus_distance = 15.5
-dof_aperture = 0.15
-dof_max_blur = 10.0
 
 [node name="SunLight" type="DirectionalLight3D" parent="." unique_id=1430552523]
 transform = Transform3D(1, 0, 0, 0, 0.42261824, 0.9063078, 0, -0.9063078, 0.42261824, 0, 0, 0)
