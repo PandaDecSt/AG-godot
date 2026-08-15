@@ -57,7 +57,7 @@ var _last_soft := -1.0
 var _last_bias := -1.0
 var _last_nb := -1.0
 var _last_sq := ""
-const DOF_EFFECT := preload("res://dof_compositor.gd")
+const DOF_EFFECT := preload("res://src/dof_compositor.gd")
 var _dof_effect: DOFEffect = null
 
 

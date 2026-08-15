@@ -11,17 +11,20 @@ func _origin_list(w, i):
 
 func _initialize():
 	print("[verify] start")
-	var loader := PMXLoader.new()
-	var model := loader.parse("res://models/model.pmx")
-	var builder := MMDModelBuilder.new()
-	var res := builder.build(model, "res://models")
+	# --script 模式（extends SceneTree）无 project 全局类表：class_name 引用一律 "not declared"，
+	# preload 带 class_name 的脚本又 "hides a global script class"，而 load(...).new() 直接写会
+	# "Cannot infer type"。经 `as Script` 显式取得 new() 返回实例，再当 Variant 动态调用绕开推断。
+	var loader: Variant = (load("res://src/pmx_loader.gd") as Script).new()
+	var model: Variant = loader.parse("res://models/model.pmx")
+	var builder: Variant = (load("res://src/mmd_builder.gd") as Script).new()
+	var res: Variant = builder.build(model, "res://models")
 	var skel: Skeleton3D = res["skeleton"]
 	var mesh: ArrayMesh = res["mesh"]
 	var mi: MeshInstance3D = res["mesh_instance"]
-	var vl := VMDLoader.new()
-	var vmd := vl.parse("res://models/motions.vmd")
+	var vl: Variant = (load("res://src/vmd_loader.gd") as Script).new()
+	var vmd: Variant = vl.parse("res://models/motions.vmd")
 
-	var player := VMDPlayer.new()
+	var player: Variant = (load("res://src/vmd_player.gd") as Script).new()
 	player.setup(skel, model["bones"], vmd, [mi], mesh, model["morphs"])
 
 	var n := skel.get_bone_count()
@@ -54,7 +57,7 @@ func _initialize():
 	for tf in frames:
 		player.time = tf
 		player._process(0.0)
-		var w := player._world
+		var w = player._world
 		var bones_out := []
 		for i in n:
 			var p: int = skel.get_bone_parent(i)
@@ -96,8 +99,8 @@ func _initialize():
 			report.append({"chain_frame0": chain})
 
 	var payload := {"n": n, "frames": report}
-	var f := FileAccess.open("C:/ag_vmdtest/verify.json", FileAccess.WRITE)
+	var f := FileAccess.open("D:/MySpace/workshop/GodotPros/AfterGlowGodot/.test/ag_vmdtest/verify.json", FileAccess.WRITE)
 	f.store_string(JSON.stringify(payload))
 	f.close()
-	print("[verify] wrote C:/ag_vmdtest/verify.json n=%d frames=%d" % [n, frames.size()])
+	print("[verify] wrote .test/ag_vmdtest/verify.json n=%d frames=%d" % [n, frames.size()])
 	quit()

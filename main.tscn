@@ -1,8 +1,8 @@
 [gd_scene format=3 uid="uid://ctqnukip5utsd"]
 
-[ext_resource type="Script" uid="uid://ckkhc014qu1jd" path="res://mmd_importer.gd" id="1_mmdimporter"]
-[ext_resource type="Script" uid="uid://clmspsu36tbd8" path="res://free_camera.gd" id="2_freecam"]
-[ext_resource type="Script" uid="uid://c3s7xpiuk1ywg" path="res://mmd_layers.gd" id="3_mmdlayers"]
+[ext_resource type="Script" uid="uid://ckkhc014qu1jd" path="res://src/mmd_importer.gd" id="1_mmdimporter"]
+[ext_resource type="Script" uid="uid://clmspsu36tbd8" path="res://src/free_camera.gd" id="2_freecam"]
+[ext_resource type="Script" uid="uid://c3s7xpiuk1ywg" path="res://src/mmd_layers.gd" id="3_mmdlayers"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1

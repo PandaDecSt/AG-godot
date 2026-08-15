@@ -268,7 +268,7 @@ func _build_material(m: Dictionary, model: Dictionary, model_dir: String, light_
 	# 仅真正半透的材质(a<1)才用带 blend_mix 的变体；其余走不透明通道，避免“内表面透视”鬼影。
 	var transparent: bool = diffuse.a < 0.999
 	var mat := ShaderMaterial.new()
-	mat.shader = load("res://mmd_material_transparent.gdshader" if transparent else "res://mmd_material.gdshader")
+	mat.shader = load("res://shaders/mmd_material_transparent.gdshader" if transparent else "res://shaders/mmd_material.gdshader")
 	mat.set_shader_parameter("light_dir", light_dir_view)
 	mat.set_shader_parameter("light_color", light_color)
 	# 图层栈默认值：mask=31(5 层全开) + 顺序 toon→spec→rim→emis→sphere。
@@ -326,7 +326,7 @@ func _build_material(m: Dictionary, model: Dictionary, model_dir: String, light_
 	var has_edge: bool = m["edgeScale"] > 0.0
 	if has_edge:
 		var outline := ShaderMaterial.new()
-		outline.shader = load("res://mmd_outline.gdshader")
+		outline.shader = load("res://shaders/mmd_outline.gdshader")
 		outline.set_shader_parameter("edge_color", m["edgeColor"])
 		outline.set_shader_parameter("edge_size", m["edgeScale"])
 		# 对齐 AfterglowWeb outline-fs：用漫反射贴图 alpha 裁掉透明处的描边

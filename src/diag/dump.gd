@@ -4,8 +4,8 @@ const FLIP_Z := true
 
 func _initialize():
 	print("[dump] start")
-	var loader := PMXLoader.new()
-	var model := loader.parse("res://models/model.pmx")
+	var loader: Variant = (load("res://src/pmx_loader.gd") as Script).new()
+	var model: Variant = loader.parse("res://models/model.pmx")
 	var bones: Array = model["bones"]
 	var n: int = bones.size()
 	print("[dump] pmx bones=%d" % n)
@@ -71,8 +71,8 @@ func _initialize():
 		tracks[nm] = lst
 
 	var payload := {"bones": out, "bone_tracks": tracks, "fps": vmd["fps"]}
-	var f := FileAccess.open("C:/ag_vmdtest/dump.json", FileAccess.WRITE)
+	var f := FileAccess.open("D:/MySpace/workshop/GodotPros/AfterGlowGodot/.test/ag_vmdtest/dump.json", FileAccess.WRITE)
 	f.store_string(JSON.stringify(payload))
 	f.close()
-	print("[dump] wrote C:/ag_vmdtest/dump.json bones=%d tracks=%d fps=%s" % [n, tracks.size(), vmd["fps"]])
+	print("[dump] wrote .test/ag_vmdtest/dump.json bones=%d tracks=%d fps=%s" % [n, tracks.size(), vmd["fps"]])
 	quit()

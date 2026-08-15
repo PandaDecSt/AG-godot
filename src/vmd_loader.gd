@@ -11,7 +11,7 @@ extends RefCounted
 # 名字解码：VMD 用 Shift-JIS，Godot 无内置解码器，故用 sjis_map.gd 的码点映射表 + ASCII 直读。
 # PMX 骨骼名是 UTF-16，两者解码成同一 Unicode 字符串即可按名匹配。
 
-const SJIS := preload("res://sjis_map.gd")
+const SJIS := preload("res://src/sjis_map.gd")
 const FPS := 30.0
 
 # 全角→半角归一化（对齐 AfterglowWeb src/utils/vmd-loader.ts:32 normalizeBoneName）。
