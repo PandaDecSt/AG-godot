@@ -1,0 +1,25 @@
+# Normalize EOL for all files that Git considers text files.
+* text=auto eol=lf
+
+# ── 二进制资产：绝不做换行转换 ─────────────────────────────
+# 关键：MMD 的 .pmx/.vmd 是二进制格式，若被 text=auto 误判为文本并做
+# CRLF→LF 转换，文件会被静默破坏（解析出错或模型崩坏）。显式声明为 binary。
+*.pmx binary
+*.vmd binary
+*.vpd binary
+*.pmd binary
+
+# 贴图与图像
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.bmp binary
+*.tga binary
+*.dds binary
+*.spa binary
+*.sph binary
+
+# Godot 导入产物 / 打包资源
+*.res binary
+*.scn binary
+*.ctex binary

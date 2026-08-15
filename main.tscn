@@ -1,0 +1,72 @@
+[gd_scene format=3 uid="uid://ctqnukip5utsd"]
+
+[ext_resource type="Script" uid="uid://ckkhc014qu1jd" path="res://mmd_importer.gd" id="1_mmdimporter"]
+[ext_resource type="Script" uid="uid://clmspsu36tbd8" path="res://free_camera.gd" id="2_freecam"]
+[ext_resource type="Script" uid="uid://c3s7xpiuk1ywg" path="res://mmd_layers.gd" id="3_mmdlayers"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 1
+background_color = Color(0.15, 0.17, 0.2, 1)
+ambient_light_source = 1
+ambient_light_color = Color(0.4, 0.45, 0.5, 1)
+ambient_light_energy = 0.5
+glow_enabled = true
+glow_levels/2 = 0.0
+glow_levels/3 = 1.0
+glow_levels/4 = 1.0
+glow_levels/5 = 1.0
+glow_levels/6 = 1.0
+glow_levels/7 = 1.0
+glow_normalized = true
+glow_intensity = 0.08
+glow_hdr_threshold = 0.85
+
+[sub_resource type="StandardMaterial3D" id="StdMat_ground"]
+albedo_color = Color(0.62, 0.64, 0.68, 1)
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
+size = Vector2(32, 32)
+
+[sub_resource type="StandardMaterial3D" id="StdMat_test"]
+albedo_color = Color(0.9, 0.22, 0.22, 1)
+roughness = 0.8
+
+[sub_resource type="BoxMesh" id="BoxMesh_test"]
+size = Vector3(3, 3, 3)
+
+[node name="Main" type="Node3D" unique_id=229161709]
+
+[node name="Camera" type="Camera3D" parent="." unique_id=900766626]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 4)
+current = true
+script = ExtResource("2_freecam")
+
+[node name="ModelRoot" type="Node3D" parent="." unique_id=1557388010]
+script = ExtResource("1_mmdimporter")
+
+[node name="LayerController" type="Node" parent="." unique_id=1732165456]
+script = ExtResource("3_mmdlayers")
+dof_focus_distance = 15.5
+dof_aperture = 0.15
+dof_max_blur = 10.0
+
+[node name="SunLight" type="DirectionalLight3D" parent="." unique_id=1430552523]
+transform = Transform3D(1, 0, 0, 0, 0.42261824, 0.9063078, 0, -0.9063078, 0.42261824, 0, 0, 0)
+light_energy = 2.0
+shadow_enabled = true
+shadow_bias = 0.3
+shadow_normal_bias = 0.9
+directional_shadow_max_distance = 120.0
+
+[node name="WorldEnv" type="WorldEnvironment" parent="." unique_id=1586348772]
+environment = SubResource("Environment_1")
+
+[node name="ShadowGround" type="MeshInstance3D" parent="." unique_id=199888777]
+material_override = SubResource("StdMat_ground")
+cast_shadow = 0
+mesh = SubResource("PlaneMesh_ground")
+
+[node name="ShadowTestBox" type="MeshInstance3D" parent="." unique_id=188223344]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 2.5, 2)
+material_override = SubResource("StdMat_test")
+mesh = SubResource("BoxMesh_test")
