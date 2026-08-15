@@ -153,6 +153,63 @@ const WUWA := {
 	},
 }
 
+# ---- 材质类型扩展预设（非 reze 数据，按需自补）----
+# 上面的 AG/WUWA 是 reze 忠实角色预设（解剖/部位语义：body/hair/eye/cloth…）。
+# reze 的"把某部件改成另一套材质预设"（leather→silk）在 reze 里是「给材质手动指派角色」，
+# 但 reze 目录里没有字面的 leather/silk。为满足"字面需求可点选"，这里补一组【材质质感类型】预设，
+# 参数按 NPR/卡通渲染常识给（高光/边缘光/色阶取向），不来自 reze 数据，仅作扩展目录。
+# 这些预设与 look pack 无关（材质本身属性），AG/WuWa 下参数一致。
+const MATERIAL_TYPES := {
+	"leather": {
+		"toon": [[0.18, 0.10, 0.07], [0.55, 0.42, 0.32], [1.0, 0.95, 0.90]],
+		"mat_saturation": 1.05, "mat_value": 0.95,
+		"rim_strength": 0.18, "rim_color": [1.0, 0.9, 0.8], "rim_power": 4.0,
+		"sphere_strength": 0.7, "emission": 0.0,
+	},
+	"silk": {
+		"toon": [[0.20, 0.22, 0.30], [0.70, 0.72, 0.82], [1.0, 1.0, 1.0]],
+		"mat_saturation": 1.15, "mat_value": 1.10,
+		"rim_strength": 0.55, "rim_color": [0.9, 0.95, 1.0], "rim_power": 2.0,
+		"sphere_strength": 1.4, "emission": 0.05,
+	},
+	"satin": {
+		"toon": [[0.22, 0.20, 0.26], [0.68, 0.66, 0.74], [1.0, 0.99, 1.0]],
+		"mat_saturation": 1.10, "mat_value": 1.05,
+		"rim_strength": 0.45, "rim_color": [0.95, 0.92, 0.90], "rim_power": 2.5,
+		"sphere_strength": 1.1, "emission": 0.03,
+	},
+	"velvet": {
+		"toon": [[0.12, 0.06, 0.12], [0.45, 0.30, 0.50], [0.90, 0.80, 0.95]],
+		"mat_saturation": 1.30, "mat_value": 0.90,
+		"rim_strength": 0.30, "rim_color": [0.95, 0.85, 0.95], "rim_power": 3.0,
+		"sphere_strength": 0.4, "emission": 0.0,
+	},
+	"denim": {
+		"toon": [[0.10, 0.12, 0.20], [0.40, 0.45, 0.60], [0.85, 0.90, 1.0]],
+		"mat_saturation": 1.10, "mat_value": 0.95,
+		"rim_strength": 0.15, "rim_color": [0.9, 0.95, 1.0], "rim_power": 4.0,
+		"sphere_strength": 0.5, "emission": 0.0,
+	},
+	"rubber": {
+		"toon": [[0.02, 0.02, 0.02], [0.40, 0.40, 0.40], [0.90, 0.90, 0.90]],
+		"mat_saturation": 0.80, "mat_value": 0.85,
+		"rim_strength": 0.40, "rim_color": [1.0, 1.0, 1.0], "rim_power": 2.0,
+		"sphere_strength": 2.0, "emission": 0.0,
+	},
+	"glass": {
+		"toon": [[0.30, 0.40, 0.50], [0.75, 0.85, 0.92], [1.0, 1.0, 1.0]],
+		"mat_saturation": 0.90, "mat_value": 1.20,
+		"rim_strength": 0.60, "rim_color": [0.85, 0.95, 1.0], "rim_power": 1.5,
+		"sphere_strength": 1.5, "emission": 0.10,
+	},
+	"pearl": {
+		"toon": [[0.28, 0.26, 0.30], [0.72, 0.70, 0.78], [1.0, 1.0, 1.0]],
+		"mat_saturation": 1.00, "mat_value": 1.05,
+		"rim_strength": 0.50, "rim_color": [0.95, 0.90, 0.98], "rim_power": 2.0,
+		"sphere_strength": 1.2, "emission": 0.05,
+	},
+}
+
 # ---- Look pack（整体渲染风格）----
 # reze: AG = filmic @ exposure 0.6(EV) world #ed6aff str 0.66
 #       WuWa = standard @ exposure 0   world #fdf2f8 str 0.36
@@ -184,6 +241,11 @@ var _ramp_cache := {}
 # 结构：_overrides["pack:role"] = { key: value, ... }，与基础预设深合并后生效。
 var _overrides := {}
 
+# 运行期【逐材质预设指派】覆盖（不落盘）：材质名 -> 目标预设名。
+# 实现 reze「对模型的不同部位应用不同的材质预设」——把某个部件从它自动归类的角色，
+# 改指派到目录里的任意另一套预设（如把一块布料从 cloth_smooth 改成 silk）。
+var _material_preset_overrides := {}
+
 # HUD 编辑器用的标量滑块 schema（标签/范围/步进）。toon 三段色与 rim_color 单独用取色器。
 const ROLE_SLIDERS := [
 	{"key": "mat_saturation",    "label": "饱和度",     "min": 0.0, "max": 3.0, "step": 0.01},
@@ -207,6 +269,62 @@ func default_pack() -> String:
 
 func role_list() -> Array:
 	return ROLES
+
+
+# 所有可指派的预设名（角色预设 ∪ 材质类型扩展 ∪ default）。
+func preset_names() -> Array:
+	var names: Array = ROLES.duplicate()
+	for k in MATERIAL_TYPES.keys():
+		if not names.has(k):
+			names.append(k)
+	if not names.has("default"):
+		names.append("default")
+	return names
+
+
+# 预设名是否在目录中存在（角色预设或材质类型扩展）。
+func preset_exists(pack: String, name: String) -> bool:
+	return pack_presets(pack).has(name) or MATERIAL_TYPES.has(name)
+
+
+# 统一预设查询：先查某 pack 的角色预设（忠实 reze 数据），没有则查材质类型扩展预设。
+# 返回合并后的基础参数 dict（含 toon 与各标量），找不到返回空 dict。
+func preset_params(pack: String, name: String) -> Dictionary:
+	var src: Dictionary = {}
+	if pack_presets(pack).has(name):
+		src = pack_presets(pack)[name]
+	elif MATERIAL_TYPES.has(name):
+		src = MATERIAL_TYPES[name]
+	if src.is_empty():
+		return {}
+	var d: Dictionary = src.duplicate(true)
+	# 预设表里自发光键名是 "emission"，而滑块/着色器 uniform 用 "emission_strength"。
+	if d.has("emission") and not d.has("emission_strength"):
+		d["emission_strength"] = d["emission"]
+	return d
+
+
+# 把某材质指派到目标预设（覆盖其自动归类的角色）。
+func set_material_preset(mat_name: String, preset_name: String) -> void:
+	_material_preset_overrides[mat_name] = preset_name
+
+
+# 清除某材质的预设指派，回退到其自动归类的角色。
+func clear_material_preset(mat_name: String) -> void:
+	_material_preset_overrides.erase(mat_name)
+
+
+# 取某材质当前生效的预设名（指派优先，否则角色回退）。
+func get_material_preset(mat_name: String, role_fallback: String) -> String:
+	return _material_preset_overrides.get(mat_name, role_fallback)
+
+
+# 对单个材质套用【解析后的预设】（指派优先，否则角色回退）。
+func apply_material(mat: ShaderMaterial, pack: String, mat_name: String, role_fallback: String) -> void:
+	var preset: String = _material_preset_overrides.get(mat_name, role_fallback)
+	if not preset_exists(pack, preset):
+		preset = role_fallback
+	apply_role(mat, pack, preset)
 
 
 func grade_list() -> Array:
@@ -299,13 +417,7 @@ func bake_ramp_from_colors(cols: Array) -> Texture2D:
 # 取某角色在某 pack 下【合并覆盖后的有效参数】（基础预设 ∪ 运行期覆盖）。
 # 返回 dict 含 "toon"(三段[r,g,b]) 与各标量键；"default" 或无预设返回空 dict。
 func get_role_params(pack: String, role: String) -> Dictionary:
-	var base: Dictionary = {}
-	if pack_presets(pack).has(role):
-		base = pack_presets(pack)[role].duplicate(true)
-		# 预设表里自发光键名是 "emission"，而滑块/着色器 uniform 用 "emission_strength"：
-		# 归一化键名，避免 apply_role 读不到值而把自发光重置成 0。
-		if base.has("emission") and not base.has("emission_strength"):
-			base["emission_strength"] = base["emission"]
+	var base: Dictionary = preset_params(pack, role).duplicate(true)
 	var ov: Dictionary = _overrides.get(pack + ":" + role, {})
 	for k in ov.keys():
 		base[k] = ov[k]

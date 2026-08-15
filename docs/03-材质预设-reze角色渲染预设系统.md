@@ -156,3 +156,35 @@ reze 的 `graph-editor` 能单独调每个部位节点图的参数（色阶/饱�
 **验证**：`src/diag/preset_edit_test.gd`（headless）确认覆盖/还原/`bake_ramp_from_colors` 缓存/两主脚本可解析全绿。
 
 > 注意：HUD 是 Control 节点，最终观感（滑块布局、取色器弹出、实时跟手）需你 F5 肉眼确认；逻辑层已无头验证通过。
+
+---
+
+## 十、逐材质预设指派（reze「不同部位用不同材质预设」）
+
+第九节的「逐部位编辑」是**改某套预设长什么样**（编辑 cloth 这套的参数）；
+本节是另一回事——**把某个具体部件整体换成另一套预设**（如一块布料从 `cloth_smooth` 改成 `silk`），
+其他部件不受影响。这正是 reze 里"给某个材质手动指派另一个 role/预设"的能力。
+
+reze 的机制：每个材质有个 `role`，决定用哪套节点图预设；role 可被手动改指派成目录里的任意一套。
+我们之前只有"自动按名字归类"，缺这一层手动指派。现已补上：
+
+**① 预设目录（可点选的目标）** = 角色预设（`body/hair/eye/face/metal/cloth_smooth/cloth_rough/stockings/accent`）
+∪ **材质类型扩展**（`leather / silk / satin / velvet / denim / rubber / glass / pearl`），加 `default`。
+- 角色预设：忠实抄自 reze（`graphs.json` / `materials.ts`）。
+- 材质类型扩展：**reze 目录里没有字面的 leather/silk**，是满足"皮革→丝绸"字面需求的自补扩展，
+  参数按 NPR/卡通常识给（高光/边缘光/色阶取向），**非 reze 数据**，见 `material_presets.gd` 顶部 `MATERIAL_TYPES`。
+
+**② HUD（F5 后顶部中间「部件材质预设指派」面板）**：
+1. **选部件**：下拉列出本模型所有材质（按 `mp_name`）；
+2. 面板显示该部件「当前生效预设」与「自动归类角色」；
+3. **选目标预设** → 「应用所选预设」→ 整块部件换上该预设全部参数，其他部件不变；
+4. **「还原（用角色默认）」** → 清掉指派，回到自动归类角色。
+
+**③ 机制**（`material_presets.gd`）：
+- 覆盖存内存 `_material_preset_overrides[材质名] = 目标预设名`，**不落盘**（关场景即丢），与 reze 一致；
+- `apply_material(mat, pack, mat_name, role_fallback)` 解析「指派优先、否则角色回退」后调 `apply_role`；
+- 切 Look pack（AG↔WuWa）时 `_apply_preset` 走 `_apply_mat_with_override`，被改成 silk 的布料**仍保持 silk**（silk 与 pack 无关），其余跟随 pack 换色阶；
+- 编辑某角色预设时（`_reapply_editing_role`）只重套"当前仍生效为该角色"的材质，已被改指派的部件不被误伤。
+
+**验证**：`src/diag/preset_reassign_test.gd`（headless）确认
+cloth_smooth→silk 时 `rim_strength 0.25→0.55`、还原回 `0.25`、`preset_names` 含 silk/leather、切 wuwa 后 silk 仍生效、两主脚本可解析，全绿。

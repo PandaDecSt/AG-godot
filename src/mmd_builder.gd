@@ -310,8 +310,10 @@ func _build_material(m: Dictionary, model: Dictionary, model_dir: String, light_
 	var _mp = (load("res://src/material_presets.gd") as Script).new()
 	var _role: String = _mp.classify_role(m["name"])
 	_mp.apply_role(mat, _mp.default_pack(), _role)
-	# 把角色标签写进材质 meta，供 mmd_importer 的「逐部位预设编辑」HUD 按 role 分组实时改。
+	# 把角色标签写进材质 meta，供 mmd_importer 的「逐部位预设编辑」HUD 按 role 分组实时改；
+	# 同时写 mp_name（PMX 材质名），供「逐材质预设指派」HUD 按部件选中并改指派。
 	mat.set_meta("mp_role", _role)
+	mat.set_meta("mp_name", m["name"])
 	print("MATPRESET %s -> role=%s pack=ag" % [m["name"], _role])
 
 	var sphere_mode: int = m["sphereMode"]

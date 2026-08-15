@@ -42,6 +42,14 @@ var _role_pick: OptionButton = null   # 部位选择下拉
 var _role_edit_box: VBoxContainer = null  # 当前部位参数控件容器
 var _editing_role: String = ""
 
+# 逐材质预设指派：材质名 -> 其所属 ShaderMaterial 数组（PMX 材质名可能重复，故用数组）
+var _mat_map: Dictionary = {}
+var _mat_list: Array = []
+var _mat_pick: OptionButton = null       # 部件（材质）选择下拉
+var _preset_pick: OptionButton = null    # 目标预设选择下拉
+var _mat_preset_label: Label = null      # 显示当前部件生效的预设
+var _sel_mat_name: String = ""
+
 
 func _ready() -> void:
 	print("=== MMD build start ===")
@@ -94,6 +102,7 @@ func _ready() -> void:
 	_cur_pack = _mp_presets.default_pack()
 	_cur_grade = "Neutral"
 	_build_role_mats()          # 按材质 meta "mp_role" 分组，供逐部位编辑器与 pack 切换用
+	_build_mat_list()           # 按材质 meta "mp_name" 建部件列表，供逐材质预设指派 HUD
 	_apply_preset(_cur_pack, _cur_grade)
 
 	# 「图层栈」控制面板 LayerController 是 main.tscn 里与 ModelRoot 平级的静态节点
@@ -208,6 +217,7 @@ func _ready() -> void:
 	_add_motion_hud()
 	_add_preset_hud()   # reze 预设：Look pack / Grade 切换（AG/WuWa + 6 套 grade）
 	_add_role_editor()  # reze 预设：逐部位实时编辑（选部位→拉滑块/取色器→实时套用）
+	_add_material_reassign_hud()  # reze 预设：把某部件（材质）整体改指派到另一套材质预设
 
 
 # ---- 动作装配 ----
@@ -444,7 +454,9 @@ func _apply_preset(pack: String, grade: String) -> void:
 		return
 	for r in _role_mats.keys():
 		for mat in _role_mats[r]:
-			_mp_presets.apply_role(mat, pack, r)
+			# 尊重逐材质预设指派：解析「指派优先，否则角色回退」后套用，
+			# 这样切 look pack（AG↔WuWa）时，被改指派成 silk 的布料仍保持 silk、其余跟随 pack。
+			_apply_mat_with_override(mat, pack, r)
 	_mp_presets.apply_look(_mats, pack, grade)
 	# 编辑器若已打开，刷新成当前 pack 的值
 	if _role_edit_box != null and _editing_role != "":
@@ -462,6 +474,27 @@ func _build_role_mats() -> void:
 		if not _role_mats.has(r):
 			_role_mats[r] = []
 		_role_mats[r].append(mat)
+
+
+# 按材质 meta "mp_name" 建部件列表（供逐材质预设指派 HUD 选中具体部件）。
+func _build_mat_list() -> void:
+	_mat_map.clear()
+	_mat_list.clear()
+	for mat in _mats:
+		if mat == null or not mat.has_meta("mp_name"):
+			continue
+		var n: String = mat.get_meta("mp_name")
+		if not _mat_map.has(n):
+			_mat_map[n] = []
+		_mat_map[n].append(mat)
+		if not _mat_list.has(n):
+			_mat_list.append(n)
+
+
+# 解析「逐材质指派优先，否则角色回退」后套用预设（供 pack 切换 / 指派应用共用）。
+func _apply_mat_with_override(mat: ShaderMaterial, pack: String, role_fallback: String) -> void:
+	var mat_name: String = mat.get_meta("mp_name", "")
+	_mp_presets.apply_material(mat, pack, mat_name, role_fallback)
 
 
 # ---- reze 逐部位编辑 HUD（右上角）：选部位→拉滑块/取色器→实时套用，带「还原 reze 默认」----
@@ -604,7 +637,15 @@ func _reapply_editing_role() -> void:
 	if _editing_role == "" or not _role_mats.has(_editing_role):
 		return
 	for mat in _role_mats[_editing_role]:
-		_mp_presets.apply_role(mat, _cur_pack, _editing_role)
+		# 只重套「当前仍生效为该角色」的材质；已被改指派成别的预设（如 silk）的部件不受影响。
+		if _effective_preset(mat, _editing_role) == _editing_role:
+			_mp_presets.apply_role(mat, _cur_pack, _editing_role)
+
+
+# 取某材质当前生效的预设名（逐材质指派优先，否则角色回退）。
+func _effective_preset(mat: ShaderMaterial, role_fallback: String) -> String:
+	var mat_name: String = mat.get_meta("mp_name", "")
+	return _mp_presets.get_material_preset(mat_name, role_fallback)
 
 
 func _on_role_reset() -> void:
@@ -613,6 +654,120 @@ func _on_role_reset() -> void:
 	_mp_presets.clear_role_override(_cur_pack, _editing_role)
 	_reapply_editing_role()
 	_rebuild_role_controls()
+
+
+# ---- reze 预设：逐材质预设指派 HUD（顶部中间）----
+# 实现 reze「对模型的不同部位应用不同的材质预设」：选中某个部件（材质），
+# 从目录里挑一套目标预设（角色预设 / 材质类型扩展如 leather·silk），
+# 整块部件换上该预设的全部参数，其他部件不受影响；「还原」回到它自动归类的角色。
+func _add_material_reassign_hud() -> void:
+	if _mp_presets == null:
+		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
+	if _mat_list.is_empty():
+		print("WARN: 无材质列表，跳过逐材质预设指派 HUD")
+		return
+	var layer := CanvasLayer.new()
+	layer.layer = 128
+	var panel := Panel.new()
+	panel.position = Vector2(470, 8)
+	panel.custom_minimum_size = Vector2(320, 320)
+	layer.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(300, 0)
+	scroll.add_child(box)
+
+	var head := Label.new()
+	head.text = "部件材质预设指派（reze 风格）"
+	box.add_child(head)
+
+	var ml := Label.new()
+	ml.text = "① 选择部件（材质）"
+	box.add_child(ml)
+	_mat_pick = OptionButton.new()
+	for n in _mat_list:
+		_mat_pick.add_item(n)
+	box.add_child(_mat_pick)
+	_mat_pick.item_selected.connect(_on_mat_pick_selected)
+
+	_mat_preset_label = Label.new()
+	box.add_child(_mat_preset_label)
+
+	var pl := Label.new()
+	pl.text = "② 指派到材质预设"
+	box.add_child(pl)
+	_preset_pick = OptionButton.new()
+	var pnames: Array = _mp_presets.preset_names()
+	for p in pnames:
+		_preset_pick.add_item(p)
+	box.add_child(_preset_pick)
+
+	var apply_btn := Button.new()
+	apply_btn.text = "应用所选预设"
+	box.add_child(apply_btn)
+	apply_btn.pressed.connect(_on_mat_preset_apply)
+
+	var reset_btn := Button.new()
+	reset_btn.text = "还原（用角色默认）"
+	box.add_child(reset_btn)
+	reset_btn.pressed.connect(_on_mat_preset_reset)
+
+	_sel_mat_name = _mat_list[0]
+	_refresh_mat_preset_ui()
+	get_tree().root.call_deferred("add_child", layer)
+	print("HUD: 顶部中间已添加「部件材质预设指派」面板（部件数=%d）" % _mat_list.size())
+
+
+func _refresh_mat_preset_ui() -> void:
+	if _mat_pick == null or _preset_pick == null or _sel_mat_name == "":
+		return
+	var role: String = ""
+	if _mat_map.has(_sel_mat_name) and _mat_map[_sel_mat_name].size() > 0:
+		role = _mat_map[_sel_mat_name][0].get_meta("mp_role", "")
+	var eff: String = _mp_presets.get_material_preset(_sel_mat_name, role)
+	_mat_preset_label.text = "当前生效预设：%s\n（自动归类角色：%s）" % [eff, role]
+	var pidx: int = 0
+	for i in _preset_pick.item_count:
+		if _preset_pick.get_item_text(i) == eff:
+			pidx = i
+			break
+	_preset_pick.selected = pidx
+
+
+func _on_mat_pick_selected(idx: int) -> void:
+	if idx < 0 or idx >= _mat_pick.item_count:
+		return
+	_sel_mat_name = _mat_pick.get_item_text(idx)
+	_refresh_mat_preset_ui()
+
+
+func _on_mat_preset_apply() -> void:
+	if _sel_mat_name == "" or not _mat_map.has(_sel_mat_name):
+		return
+	var chosen: String = _preset_pick.get_item_text(_preset_pick.selected)
+	var mats: Array = _mat_map[_sel_mat_name]
+	var role: String = mats[0].get_meta("mp_role", "")
+	# 选了和自动角色相同 / default → 视为清除指派（回到角色默认）。
+	if chosen == role or chosen == "default":
+		_mp_presets.clear_material_preset(_sel_mat_name)
+	else:
+		_mp_presets.set_material_preset(_sel_mat_name, chosen)
+	for mat in mats:
+		_apply_mat_with_override(mat, _cur_pack, role)
+	_refresh_mat_preset_ui()
+
+
+func _on_mat_preset_reset() -> void:
+	if _sel_mat_name == "" or not _mat_map.has(_sel_mat_name):
+		return
+	var mats: Array = _mat_map[_sel_mat_name]
+	var role: String = mats[0].get_meta("mp_role", "")
+	_mp_presets.clear_material_preset(_sel_mat_name)
+	for mat in mats:
+		_apply_mat_with_override(mat, _cur_pack, role)
+	_refresh_mat_preset_ui()
 
 
 # ---- reze 预设 HUD（左下角）：Look pack（AG/WuWa）与 Grade（6 套）实时切换 ----
