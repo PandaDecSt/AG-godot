@@ -49,6 +49,8 @@ const IK_EPS := 1e-8
 const IK_DONE := 0.1                      # 末端与目标距离小于此值即收工（MMD 原生单位，builder 未缩放）
 
 var skeleton: Skeleton3D = null
+var _physics: MMDPhysicsGD = null        # 可选：挂上后每帧在 _flush 之后跑物理，驱动头发/裙子
+var _need_phys_reset: bool = false       # 循环回绕时置位，flush 后调用 physics.reset 吸附新位姿
 var vmd: Dictionary = {}
 var pmx_bones: Array = []
 var mesh: ArrayMesh = null
@@ -422,6 +424,9 @@ func _process(delta: float) -> void:
 			if loop:
 				time = fmod(time, duration)
 				_cursor.clear()
+				# 循环回到开头：骨骼位姿会大跳变，让物理立刻吸附而不是插值追赶。
+				# 只置标志，实际 reset 放在 flush 之后（那时骨骼已是新一帧动画位姿）。
+				_need_phys_reset = true
 			else:
 				time = duration
 				playing = false
@@ -432,8 +437,20 @@ func _process(delta: float) -> void:
 		_apply_ik()
 		_update_world_all()      # 让付与親读到 IK 之后的来源骨
 	_flush_to_skeleton()
+	# 物理：读取本帧（已 flush 的）骨骼局部位姿 -> C++ 求解 -> 把动态刚体对应骨骼写回。
+	# 物理内部状态跨帧保留，故每帧在动画位姿之上叠加二次运动（头发/裙子的自然摆动）。
+	if _physics != null and _physics.is_ready():
+		if _need_phys_reset:
+			_physics.reset(skeleton)
+			_need_phys_reset = false
+		_physics.step_frame(skeleton, delta)
 	if morph_enabled:
 		_apply_morphs()
+
+
+# 由 mmd_importer 在装配动作时调用：把编译好的物理世界挂到播放器上。
+func set_physics(p: MMDPhysicsGD) -> void:
+	_physics = p
 
 
 func _apply_bones() -> void:

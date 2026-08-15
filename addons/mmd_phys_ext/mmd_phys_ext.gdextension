@@ -1,0 +1,23 @@
+[configuration]
+
+; Entry point symbol exported by the C++ build (see src/mmd_physics.cpp).
+entry_symbol = "mmd_phys_ext_init"
+
+; Minimum Godot version this extension was built against (api_version=4.7).
+compatibility_minimum = "4.7"
+
+[libraries]
+
+; Built with: scons platform=windows arch=x86_64 target=editor api_version=4.7
+; Produces bin/mmd_phys_ext.windows.editor.x86_64.dll. When you rebuild the
+; extension, re-copy that dll into this folder (or point the path at it).
+windows.editor.x86_64 = "res://addons/mmd_phys_ext/bin/mmd_phys_ext.windows.editor.x86_64.dll"
+
+; Template (export) builds need the matching non-editor dll. Rebuild with
+; target=template_debug / target=template_release and add the lines below.
+; windows.debug.x86_64 = "res://addons/mmd_phys_ext/bin/mmd_phys_ext.windows.template_debug.x86_64.dll"
+; windows.release.x86_64 = "res://addons/mmd_phys_ext/bin/mmd_phys_ext.windows.template_release.x86_64.dll"
+
+[dependencies]
+
+; No external DLL dependencies beyond the Godot GDExtension runtime.

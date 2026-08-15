@@ -17,6 +17,10 @@ const AUTO_PLAY := true
 # 观感上像"光照突然切换又变回"，易误判。需要 AI 读图诊断时手动设 true 再 F5。
 const AUTO_DEBUG_SHOTS := false
 
+# 物理开关：默认开。关掉则只播动画、不跑头发/裙子物理（用于对比或性能省电）。
+# 物理需要 addons/mmd_phys_ext 里的 GDExtension（已编译的 .dll）正常加载。
+const ENABLE_PHYSICS := true
+
 var _mats: Array = []
 var _outline_pairs: Array = []
 var _layer_ctrl = null
@@ -253,6 +257,17 @@ func _setup_motion(model: Dictionary, res: Dictionary) -> void:
 		targets.append(shadow)
 	_player.setup(res["skeleton"], model["bones"], vmd, targets, res["mesh"], model["morphs"])
 	_player.playing = AUTO_PLAY
+
+	# ---- 物理：把 PMX 刚体/关节交给 MMDPhysicsGD（GDExtension 直译的 reze 物理）----
+	if ENABLE_PHYSICS and model.has("rigidbodies") and model["rigidbodies"].size() > 0:
+		var phys := MMDPhysicsGD.new()
+		phys.initialize(res["skeleton"], model["rigidbodies"], model["joints"])
+		if phys.is_ready():
+			_player.set_physics(phys)
+			print("PHYSICS: 已挂载到播放器（%d 刚体 / %d 关节，受驱动骨骼见初始化日志）" % [
+				model["rigidbodies"].size(), model["joints"].size()])
+		else:
+			print("PHYSICS: 初始化失败（扩展未加载？），本次不启用物理")
 
 
 func _capture_debug_shots() -> void:
