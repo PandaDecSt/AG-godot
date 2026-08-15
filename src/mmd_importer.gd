@@ -50,6 +50,19 @@ var _preset_pick: OptionButton = null    # 目标预设选择下拉
 var _mat_preset_label: Label = null      # 显示当前部件生效的预设
 var _sel_mat_name: String = ""
 
+# ---- 现代化 HUD 系统（取代原先散落、会挡画面/文字溢出的固定坐标面板）----
+var _hud_layer = null          # CanvasLayer（layer 128）
+var _hud_theme: Theme = null   # 统一主题（圆角半透明 + 紫色强调）
+var _hud_toggle: Button = null # 常驻「≡ 面板」开关
+var _hud_docks: Control = null  # 面板容器（整体隐藏用），鼠标穿透空白处
+var _hud_visible: bool = true
+var _left_dock: PanelContainer = null
+var _right_dock: PanelContainer = null
+var _left_scroll: ScrollContainer = null
+var _right_scroll: ScrollContainer = null
+var _left_w: float = 312.0
+var _right_w: float = 346.0
+
 
 func _ready() -> void:
 	print("=== MMD build start ===")
@@ -212,12 +225,8 @@ func _ready() -> void:
 	if AUTO_DEBUG_SHOTS:
 		_capture_debug_shots()
 
-	# 运行态 HUD：屏幕左下角拖滑块即可实时调描边粗细（材质运行态才创建，编辑态拖 Inspector 不生效）
-	_add_outline_hud()
-	_add_motion_hud()
-	_add_preset_hud()   # reze 预设：Look pack / Grade 切换（AG/WuWa + 6 套 grade）
-	_add_role_editor()  # reze 预设：逐部位实时编辑（选部位→拉滑块/取色器→实时套用）
-	_add_material_reassign_hud()  # reze 预设：把某部件（材质）整体改指派到另一套材质预设
+	# 运行态 HUD：现代化面板系统（左上=播放/外观，右上=材质预设；H 键可整体隐藏）
+	_init_hud()
 
 
 # ---- 动作装配 ----
@@ -324,6 +333,9 @@ func _unhandled_input(event: InputEvent) -> void:
 					if not _player.morph_enabled:
 						_player.clear_all_morphs()
 					print("M 表情 -> ", _player.morph_enabled)
+			KEY_H:
+				_on_hud_toggle()
+				print("H HUD 面板 -> ", "显示" if _hud_visible else "隐藏")
 
 
 func _update_light() -> void:
@@ -344,96 +356,295 @@ func _update_light() -> void:
 			mat.set_shader_parameter("light_color", col3)
 
 
-# 运行态 HUD：屏幕左下角加一个滑块，直接调描边粗细（解决「编辑态拖 Inspector 不生效」的困惑）
-func _add_outline_hud() -> void:
-	if _layer_ctrl == null:
+# ============================================================
+#  现代化 HUD 系统（取代原先散落、会挡画面 / 文字溢出的多个固定坐标面板）
+#  - 所有面板停靠在【左上 / 右上】边缘，永不直接盖住居中的角色
+#  - 面板可整体隐藏（按钮 / 快捷键 H），且每个面板可单独折叠
+#  - 视口缩放时自动夹取尺寸与位置，文字 / 控件绝不会跑到窗口外
+#  - 半透明圆角深色 + 紫色强调色，统一 Theme；空白处鼠标穿透到 3D 视口
+# ============================================================
+
+# 统一主题：圆角半透明面板 + 紫色强调 + 合适字号
+func _make_hud_theme() -> Theme:
+	var t := Theme.new()
+	t.default_font_size = 14
+	var pnl := StyleBoxFlat.new()
+	pnl.bg_color = Color(0.09, 0.10, 0.14, 0.88)
+	pnl.set_border_width_all(1)
+	pnl.border_color = Color(0.46, 0.32, 0.78, 0.85)
+	pnl.corner_radius_top_left = 12; pnl.corner_radius_top_right = 12
+	pnl.corner_radius_bottom_left = 12; pnl.corner_radius_bottom_right = 12
+	pnl.content_margin_left = 12; pnl.content_margin_right = 12
+	pnl.content_margin_top = 10; pnl.content_margin_bottom = 12
+	t.set_stylebox("panel", "PanelContainer", pnl)
+	var btn := StyleBoxFlat.new()
+	btn.bg_color = Color(0.24, 0.17, 0.40, 1.0)
+	btn.set_corner_radius_all(8)
+	t.set_stylebox("normal", "Button", btn)
+	var btn_h := StyleBoxFlat.new()
+	btn_h.bg_color = Color(0.36, 0.25, 0.58, 1.0)
+	btn_h.set_corner_radius_all(8)
+	t.set_stylebox("hover", "Button", btn_h)
+	t.set_color("font_color", "Label", Color(0.92, 0.93, 0.97))
+	t.set_color("font_color", "Button", Color(0.96, 0.95, 1.0))
+	return t
+
+
+# 生成一个带标题栏（可折叠）+ 滚动内容区的停靠面板。
+# content 由调用方提供（左侧放 VBox，右侧放 TabContainer）。
+func _make_dock(title: String, content: Control) -> PanelContainer:
+	var p := PanelContainer.new()
+	p.add_theme_stylebox_override("panel", _make_dock_style())
+	var vb := VBoxContainer.new()
+	vb.name = "VB"
+	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	p.add_child(vb)
+	var hb := HBoxContainer.new()
+	vb.add_child(hb)
+	var t := Label.new()
+	t.text = title
+	t.add_theme_color_override("font_color", Color(0.82, 0.68, 1.0))
+	t.add_theme_font_size_override("font_size", 15)
+	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(t)
+	var collapse := Button.new()
+	collapse.text = "▾"
+	collapse.custom_minimum_size = Vector2(30, 24)
+	hb.add_child(collapse)
+	var scroll := ScrollContainer.new()
+	scroll.name = "Scroll"
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_child(scroll)
+	scroll.add_child(content)
+	collapse.pressed.connect(func():
+		scroll.visible = not scroll.visible
+		collapse.text = "▾" if scroll.visible else "▸")
+	return p
+
+
+func _make_dock_style() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.09, 0.10, 0.14, 0.88)
+	s.set_border_width_all(1)
+	s.border_color = Color(0.46, 0.32, 0.78, 0.85)
+	s.set_corner_radius_all(12)
+	s.content_margin_left = 12; s.content_margin_right = 12
+	s.content_margin_top = 10; s.content_margin_bottom = 12
+	return s
+
+
+# 把面板锚到左上（具体矩形在 _on_viewport_resize 里按视口夹取）。
+func _pin_dock(p: Control, w: float) -> void:
+	p.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	p.custom_minimum_size = Vector2(w, 0)
+
+
+func _add_hsep(vb: VBoxContainer) -> void:
+	var h := HSeparator.new()
+	h.modulate = Color(1, 1, 1, 0.18)
+	vb.add_child(h)
+
+
+func _mk_label(txt: String) -> Label:
+	var l := Label.new()
+	l.text = txt
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return l
+
+
+# 构建整个 HUD（在 _ready 末尾调用一次，取代原先 5 个散落的 _add_*_hud）。
+func _init_hud() -> void:
+	if _mp_presets == null:
+		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
+	_hud_theme = _make_hud_theme()
+
+	_hud_layer = CanvasLayer.new()
+	_hud_layer.layer = 128
+	get_tree().root.call_deferred("add_child", _hud_layer)
+
+	# 全局开关（常驻可见，用于唤回面板）
+	_hud_toggle = Button.new()
+	_hud_toggle.text = "≡ 面板"
+	_hud_toggle.theme = _hud_theme
+	_hud_toggle.tooltip_text = "显示 / 隐藏所有控制面板（快捷键 H）"
+	_hud_toggle.custom_minimum_size = Vector2(86, 32)
+	_hud_toggle.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	_hud_toggle.offset_right = -12.0
+	_hud_toggle.offset_top = 12.0
+	_hud_toggle.offset_left = -12.0 - 86.0
+	_hud_toggle.offset_bottom = 12.0 + 32.0
+	_hud_toggle.pressed.connect(_on_hud_toggle)
+	_hud_layer.add_child(_hud_toggle)
+
+	# 面板容器（可被整体隐藏）；设为 IGNORE 让空白处的鼠标穿透到 3D 视口
+	_hud_docks = Control.new()
+	_hud_docks.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_hud_docks.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hud_layer.add_child(_hud_docks)
+
+	# 左停靠：播放 / 外观
+	var left_vb := VBoxContainer.new()
+	left_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_left_dock = _make_dock("播放 / 外观", left_vb)
+	_pin_dock(_left_dock, _left_w)
+	_hud_docks.add_child(_left_dock)
+	_left_scroll = _left_dock.get_node("VB/Scroll") as ScrollContainer
+	_build_left_dock(left_vb)
+
+	# 右停靠：材质预设（reze）— 两个标签页
+	var tabs := TabContainer.new()
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_right_dock = _make_dock("材质预设 (reze)", tabs)
+	_pin_dock(_right_dock, _right_w)
+	_hud_docks.add_child(_right_dock)
+	_right_scroll = _right_dock.get_node("VB/Scroll") as ScrollContainer
+	_build_right_dock(tabs)
+
+	_hud_visible = true
+	get_viewport().size_changed.connect(_on_viewport_resize)
+	_on_viewport_resize()
+	print("HUD: 现代化面板已构建（左侧=播放/外观，右侧=材质预设；H 键可隐藏）")
+
+
+func _on_hud_toggle() -> void:
+	_hud_visible = not _hud_visible
+	_hud_docks.visible = _hud_visible
+	_hud_toggle.text = "≡ 面板" if _hud_visible else "≡ 显示"
+
+
+# 视口尺寸变化时重新夹取面板矩形（左/右上停靠，高度按视口夹取，内容过多则在面板内滚动）
+func _on_viewport_resize() -> void:
+	if _hud_layer == null:
 		return
-	var layer := CanvasLayer.new()
-	layer.layer = 128
-	var label := Label.new()
-	label.text = "描边粗细 Outline"
-	label.position = Vector2(16, 8)
-	layer.add_child(label)
-	var slider := HSlider.new()
-	slider.min_value = 0.0
-	slider.max_value = 8.0
-	slider.step = 0.1
-	slider.value = _layer_ctrl.outline_thickness
-	slider.size = Vector2(220, 24)
-	slider.position = Vector2(16, 30)
-	layer.add_child(slider)
-	slider.value_changed.connect(_on_outline_thick)
-	get_tree().root.call_deferred("add_child", layer)
-	print("HUD: 左下角已添加「描边粗细」滑块（拖动即生效）")
+	var vp = get_viewport().size
+	var m := 12.0
+	# 左停靠（左上角）
+	var lw := minf(_left_w, maxf(160.0, vp.x - 2.0 * m))
+	_left_dock.custom_minimum_size = Vector2(lw, 0)
+	_left_dock.offset_left = m
+	_left_dock.offset_top = 12.0
+	_left_dock.offset_right = m + lw
+	_left_dock.offset_bottom = 12.0 + maxf(140.0, vp.y - 12.0 - m)
+	# 右停靠（右上角，但避开顶部开关按钮：top=58）
+	var rw := minf(_right_w, maxf(180.0, vp.x - 2.0 * m))
+	_right_dock.custom_minimum_size = Vector2(rw, 0)
+	_right_dock.offset_right = vp.x - m
+	_right_dock.offset_top = 58.0
+	_right_dock.offset_left = vp.x - m - rw
+	_right_dock.offset_bottom = 58.0 + maxf(140.0, vp.y - 58.0 - m)
 
 
-func _on_outline_thick(v: float) -> void:
+# ---- 左侧停靠内容：动作播放 + 描边 + reze Look/Grade ----
+func _build_left_dock(vb: VBoxContainer) -> void:
+	if _player != null:
+		var head := Label.new(); head.text = "动作"; head.add_theme_font_size_override("font_size", 14); vb.add_child(head)
+		_time_label = Label.new(); _time_label.text = "0.00 / %.2f s" % _player.duration; vb.add_child(_time_label)
+		_time_slider = HSlider.new()
+		_time_slider.min_value = 0.0; _time_slider.max_value = maxf(_player.duration, 0.001)
+		_time_slider.step = 0.01; _time_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		vb.add_child(_time_slider)
+		_time_slider.drag_ended.connect(func(changed: bool):
+			if changed and _player != null: _player.seek(_time_slider.value))
+		var sp_row := Label.new(); sp_row.text = "速度 1.00x"; vb.add_child(sp_row)
+		var sp := HSlider.new(); sp.min_value = 0.1; sp.max_value = 2.0; sp.step = 0.05; sp.value = 1.0
+		sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL; vb.add_child(sp)
+		sp.value_changed.connect(func(v: float):
+			if _player != null: _player.speed = v
+			sp_row.text = "速度 %.2fx" % v)
+		var row := HBoxContainer.new(); vb.add_child(row)
+		_chk_loop = _mk_check("循环", _player.loop, func(on: bool): _player.loop = on)
+		_chk_ik = _mk_check("IK", _player.ik_enabled, func(on: bool): _player.ik_enabled = on)
+		_chk_append = _mk_check("付与親", _player.append_enabled, func(on: bool): _player.append_enabled = on)
+		_chk_morph = _mk_check("表情", _player.morph_enabled, func(on: bool):
+			_player.morph_enabled = on; if not on: _player.clear_all_morphs())
+		row.add_child(_chk_loop); row.add_child(_chk_ik); row.add_child(_chk_append); row.add_child(_chk_morph)
+		_add_hsep(vb)
 	if _layer_ctrl != null:
-		_layer_ctrl.outline_thickness = v
+		var ol := Label.new(); ol.text = "描边粗细"; vb.add_child(ol)
+		var ols := HSlider.new(); ols.min_value = 0.0; ols.max_value = 8.0; ols.step = 0.1
+		ols.value = _layer_ctrl.outline_thickness; ols.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		vb.add_child(ols)
+		ols.value_changed.connect(func(v: float):
+			if _layer_ctrl != null: _layer_ctrl.outline_thickness = v)
+		_add_hsep(vb)
+	if _mp_presets != null:
+		var rh := Label.new(); rh.text = "reze 预设（Look / Grade）"
+		rh.add_theme_color_override("font_color", Color(0.82, 0.68, 1.0)); vb.add_child(rh)
+		var looks: Array = _mp_presets.look_list()
+		var look_btn := OptionButton.new(); look_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		for p in looks: look_btn.add_item(p)
+		look_btn.selected = maxi(0, looks.find(_cur_pack)); vb.add_child(look_btn)
+		look_btn.item_selected.connect(func(idx: int):
+			if idx >= 0 and idx < looks.size(): _apply_preset(looks[idx], _cur_grade))
+		var grades: Array = _mp_presets.grade_list()
+		var grade_btn := OptionButton.new(); grade_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		for g in grades: grade_btn.add_item(g)
+		grade_btn.selected = maxi(0, grades.find(_cur_grade)); vb.add_child(grade_btn)
+		grade_btn.item_selected.connect(func(idx: int):
+			if idx >= 0 and idx < grades.size(): _apply_preset(_cur_pack, grades[idx]))
+	var hint := Label.new()
+	hint.text = "空格=播/停  R=重播  I=IK  M=表情  H=面板"
+	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.78))
+	hint.add_theme_font_size_override("font_size", 11)
+	vb.add_child(hint)
+
+
+# ---- 右侧停靠内容：标签页「逐部位编辑」+「部件预设指派」----
+func _build_right_dock(tabs: TabContainer) -> void:
+	# 标签 1：逐部位预设编辑
+	var t1 := ScrollContainer.new(); t1.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	t1.size_flags_horizontal = Control.SIZE_EXPAND_FILL; t1.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var v1 := VBoxContainer.new(); v1.size_flags_horizontal = Control.SIZE_EXPAND_FILL; t1.add_child(v1)
+	tabs.add_child(t1); tabs.set_tab_title(tabs.get_child_count() - 1, "逐部位编辑")
+	_role_pick = OptionButton.new(); _role_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var roles: Array = _mp_presets.role_list()
+	for r in roles:
+		if _role_mats.has(r) and _role_mats[r].size() > 0:
+			_role_pick.add_item(r)
+	if _role_pick.item_count > 0:
+		_role_pick.selected = 0
+		_editing_role = _role_pick.get_item_text(0)
+	v1.add_child(_role_pick)
+	_role_pick.item_selected.connect(_on_role_selected)
+	var reset := Button.new(); reset.text = "还原 reze 默认"; reset.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v1.add_child(reset); reset.pressed.connect(_on_role_reset)
+	_role_edit_box = VBoxContainer.new(); _role_edit_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v1.add_child(_role_edit_box)
+	_rebuild_role_controls()
+
+	# 标签 2：部件材质预设指派
+	var t2 := ScrollContainer.new(); t2.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	t2.size_flags_horizontal = Control.SIZE_EXPAND_FILL; t2.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var v2 := VBoxContainer.new(); v2.size_flags_horizontal = Control.SIZE_EXPAND_FILL; t2.add_child(v2)
+	tabs.add_child(t2); tabs.set_tab_title(tabs.get_child_count() - 1, "部件预设指派")
+	if _mat_list.is_empty():
+		v2.add_child(_mk_label("（无可用材质）"))
+		return
+	var ml := Label.new(); ml.text = "① 选择部件（材质）"; v2.add_child(ml)
+	_mat_pick = OptionButton.new(); _mat_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for n in _mat_list: _mat_pick.add_item(n)
+	v2.add_child(_mat_pick); _mat_pick.item_selected.connect(_on_mat_pick_selected)
+	_mat_preset_label = Label.new(); v2.add_child(_mat_preset_label)
+	var pl := Label.new(); pl.text = "② 指派到材质预设"; v2.add_child(pl)
+	_preset_pick = OptionButton.new(); _preset_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for p in _mp_presets.preset_names(): _preset_pick.add_item(p)
+	v2.add_child(_preset_pick)
+	var apply_btn := Button.new(); apply_btn.text = "应用所选预设"; apply_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v2.add_child(apply_btn); apply_btn.pressed.connect(_on_mat_preset_apply)
+	var reset_btn := Button.new(); reset_btn.text = "还原（用角色默认）"; reset_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v2.add_child(reset_btn); reset_btn.pressed.connect(_on_mat_preset_reset)
+	_sel_mat_name = _mat_list[0]
+	_refresh_mat_preset_ui()
 
 
 # ---- 动作播放 HUD（左下角）----
 # 做成运行态 HUD 而不是 Inspector 属性，理由同描边滑块：编辑态改属性对运行时实例不生效。
-func _add_motion_hud() -> void:
-	if _player == null:
-		return
-	var layer := CanvasLayer.new()
-	layer.layer = 128
-	var box := VBoxContainer.new()
-	box.position = Vector2(16, 70)
-	box.custom_minimum_size = Vector2(260, 0)
-	layer.add_child(box)
-
-	var head := Label.new()
-	head.text = "动作  空格=播/停  R=重播  I=IK  M=表情"
-	box.add_child(head)
-
-	_time_label = Label.new()
-	_time_label.text = "0.00 / %.2f s" % _player.duration
-	box.add_child(_time_label)
-
-	_time_slider = HSlider.new()
-	_time_slider.min_value = 0.0
-	_time_slider.max_value = maxf(_player.duration, 0.001)
-	_time_slider.step = 0.01
-	_time_slider.custom_minimum_size = Vector2(240, 20)
-	box.add_child(_time_slider)
-	# 只有用户真的拖动才 seek；播放时的滑块跟随用 set_value_no_signal 写，避免自激循环
-	_time_slider.drag_ended.connect(func(changed: bool):
-		if changed and _player != null:
-			_player.seek(_time_slider.value))
-
-	var sp_row := Label.new()
-	sp_row.text = "速度 1.00x"
-	box.add_child(sp_row)
-	var sp := HSlider.new()
-	sp.min_value = 0.1
-	sp.max_value = 2.0
-	sp.step = 0.05
-	sp.value = 1.0
-	sp.custom_minimum_size = Vector2(240, 20)
-	box.add_child(sp)
-	sp.value_changed.connect(func(v: float):
-		if _player != null:
-			_player.speed = v
-		sp_row.text = "速度 %.2fx" % v)
-
-	var row := HBoxContainer.new()
-	box.add_child(row)
-	_chk_loop = _mk_check("循环", _player.loop, func(on: bool): _player.loop = on)
-	_chk_ik = _mk_check("IK", _player.ik_enabled, func(on: bool): _player.ik_enabled = on)
-	_chk_append = _mk_check("付与親", _player.append_enabled, func(on: bool): _player.append_enabled = on)
-	_chk_morph = _mk_check("表情", _player.morph_enabled, func(on: bool):
-		_player.morph_enabled = on
-		if not on:
-			_player.clear_all_morphs())
-	row.add_child(_chk_loop)
-	row.add_child(_chk_ik)
-	row.add_child(_chk_append)
-	row.add_child(_chk_morph)
-
-	get_tree().root.call_deferred("add_child", layer)
-	print("HUD: 左下角已添加「动作播放」面板（时间/速度/循环/IK/付与親/表情）")
+# （已废弃）原 _add_motion_hud：其逻辑已并入 _build_left_dock，统一进现代化 HUD 系统。
+# 保留此注释占位，避免误调用；函数体已移除。
 
 
 func _mk_check(text: String, pressed: bool, cb: Callable) -> CheckBox:
@@ -499,48 +710,8 @@ func _apply_mat_with_override(mat: ShaderMaterial, pack: String, role_fallback: 
 
 # ---- reze 逐部位编辑 HUD（右上角）：选部位→拉滑块/取色器→实时套用，带「还原 reze 默认」----
 # 对齐 reze-design 的「对每个部位的材质修改着色器预设」：节点图参数可单独调、随场景生效。
-func _add_role_editor() -> void:
-	if _mp_presets == null:
-		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
-	var layer := CanvasLayer.new()
-	layer.layer = 128
-	var panel := Panel.new()
-	panel.position = Vector2(980, 8)
-	panel.custom_minimum_size = Vector2(300, 560)
-	layer.add_child(panel)
-	var scroll := ScrollContainer.new()
-	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	panel.add_child(scroll)
-	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(280, 0)
-	scroll.add_child(box)
-
-	var head := Label.new()
-	head.text = "逐部位预设编辑（reze 风格）"
-	box.add_child(head)
-
-	_role_pick = OptionButton.new()
-	var roles: Array = _mp_presets.role_list()
-	for r in roles:
-		if _role_mats.has(r) and _role_mats[r].size() > 0:
-			_role_pick.add_item(r)
-	if _role_pick.item_count > 0:
-		_role_pick.selected = 0
-		_editing_role = _role_pick.get_item_text(0)
-	box.add_child(_role_pick)
-	_role_pick.item_selected.connect(_on_role_selected)
-
-	var reset := Button.new()
-	reset.text = "还原 reze 默认"
-	box.add_child(reset)
-	reset.pressed.connect(_on_role_reset)
-
-	_role_edit_box = VBoxContainer.new()
-	box.add_child(_role_edit_box)
-	_rebuild_role_controls()
-
-	get_tree().root.call_deferred("add_child", layer)
-	print("HUD: 右上角已添加「逐部位预设编辑」面板（部位：%s）" % _role_pick.get_item_text(0) if _role_pick.item_count > 0 else "无")
+# （已废弃）原 _add_role_editor：其逻辑已并入 _build_right_dock（"逐部位编辑" 标签页）。
+# 保留此注释占位，避免误调用；函数体已移除。
 
 
 func _on_role_selected(idx: int) -> void:
@@ -660,64 +831,8 @@ func _on_role_reset() -> void:
 # 实现 reze「对模型的不同部位应用不同的材质预设」：选中某个部件（材质），
 # 从目录里挑一套目标预设（角色预设 / 材质类型扩展如 leather·silk），
 # 整块部件换上该预设的全部参数，其他部件不受影响；「还原」回到它自动归类的角色。
-func _add_material_reassign_hud() -> void:
-	if _mp_presets == null:
-		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
-	if _mat_list.is_empty():
-		print("WARN: 无材质列表，跳过逐材质预设指派 HUD")
-		return
-	var layer := CanvasLayer.new()
-	layer.layer = 128
-	var panel := Panel.new()
-	panel.position = Vector2(470, 8)
-	panel.custom_minimum_size = Vector2(320, 320)
-	layer.add_child(panel)
-	var scroll := ScrollContainer.new()
-	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	panel.add_child(scroll)
-	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(300, 0)
-	scroll.add_child(box)
-
-	var head := Label.new()
-	head.text = "部件材质预设指派（reze 风格）"
-	box.add_child(head)
-
-	var ml := Label.new()
-	ml.text = "① 选择部件（材质）"
-	box.add_child(ml)
-	_mat_pick = OptionButton.new()
-	for n in _mat_list:
-		_mat_pick.add_item(n)
-	box.add_child(_mat_pick)
-	_mat_pick.item_selected.connect(_on_mat_pick_selected)
-
-	_mat_preset_label = Label.new()
-	box.add_child(_mat_preset_label)
-
-	var pl := Label.new()
-	pl.text = "② 指派到材质预设"
-	box.add_child(pl)
-	_preset_pick = OptionButton.new()
-	var pnames: Array = _mp_presets.preset_names()
-	for p in pnames:
-		_preset_pick.add_item(p)
-	box.add_child(_preset_pick)
-
-	var apply_btn := Button.new()
-	apply_btn.text = "应用所选预设"
-	box.add_child(apply_btn)
-	apply_btn.pressed.connect(_on_mat_preset_apply)
-
-	var reset_btn := Button.new()
-	reset_btn.text = "还原（用角色默认）"
-	box.add_child(reset_btn)
-	reset_btn.pressed.connect(_on_mat_preset_reset)
-
-	_sel_mat_name = _mat_list[0]
-	_refresh_mat_preset_ui()
-	get_tree().root.call_deferred("add_child", layer)
-	print("HUD: 顶部中间已添加「部件材质预设指派」面板（部件数=%d）" % _mat_list.size())
+# （已废弃）原 _add_material_reassign_hud：其逻辑已并入 _build_right_dock（"部件预设指派" 标签页）。
+# 保留此注释占位，避免误调用；函数体已移除。
 
 
 func _refresh_mat_preset_ui() -> void:
@@ -770,46 +885,5 @@ func _on_mat_preset_reset() -> void:
 	_refresh_mat_preset_ui()
 
 
-# ---- reze 预设 HUD（左下角）：Look pack（AG/WuWa）与 Grade（6 套）实时切换 ----
-# 对齐 reze-design 的「对不同材质有具体的预设图方案」：AG/WuWa 两套整体风格 +
-# 6 套 color grade，运行时一键切换，无需重开场景。
-func _add_preset_hud() -> void:
-	if _mp_presets == null:
-		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
-	var layer := CanvasLayer.new()
-	layer.layer = 128
-	var box := VBoxContainer.new()
-	box.position = Vector2(16, 360)
-	box.custom_minimum_size = Vector2(240, 0)
-	layer.add_child(box)
-
-	var head := Label.new()
-	head.text = "reze 预设  Look / Grade"
-	box.add_child(head)
-
-	# Look pack 下拉（ag / wuwa）
-	var looks: Array = _mp_presets.look_list()
-	var look_btn := OptionButton.new()
-	for p in looks:
-		look_btn.add_item(p)
-	look_btn.selected = maxi(0, looks.find(_cur_pack))
-	box.add_child(look_btn)
-	look_btn.item_selected.connect(func(idx: int):
-		if idx < 0 or idx >= looks.size():
-			return
-		_apply_preset(looks[idx], _cur_grade))
-
-	# Grade 下拉（6 套）
-	var grades: Array = _mp_presets.grade_list()
-	var grade_btn := OptionButton.new()
-	for g in grades:
-		grade_btn.add_item(g)
-	grade_btn.selected = maxi(0, grades.find(_cur_grade))
-	box.add_child(grade_btn)
-	grade_btn.item_selected.connect(func(idx: int):
-		if idx < 0 or idx >= grades.size():
-			return
-		_apply_preset(_cur_pack, grades[idx]))
-
-	get_tree().root.call_deferred("add_child", layer)
-	print("HUD: 左下角已添加「reze 预设」面板（Look pack:%s / Grade:%s 切换）" % [_cur_pack, _cur_grade])
+# （已废弃）原 _add_preset_hud：其 Look/Grade 切换逻辑已并入 _build_left_dock。
+# 保留此注释占位，避免误调用；函数体已移除。
