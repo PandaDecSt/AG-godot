@@ -180,6 +180,20 @@ const GRADE_TINT_SCALE := 0.6
 
 var _ramp_cache := {}
 
+# 运行期逐部位覆盖（不落盘，关场景即丢；对齐 reze「随场景编辑节点参数」的可改不可持久语义）。
+# 结构：_overrides["pack:role"] = { key: value, ... }，与基础预设深合并后生效。
+var _overrides := {}
+
+# HUD 编辑器用的标量滑块 schema（标签/范围/步进）。toon 三段色与 rim_color 单独用取色器。
+const ROLE_SLIDERS := [
+	{"key": "mat_saturation",    "label": "饱和度",     "min": 0.0, "max": 3.0, "step": 0.01},
+	{"key": "mat_value",         "label": "明度",       "min": 0.0, "max": 2.0, "step": 0.01},
+	{"key": "rim_strength",      "label": "边缘光强度", "min": 0.0, "max": 2.0, "step": 0.01},
+	{"key": "rim_power",         "label": "边缘光锐度", "min": 0.5, "max": 6.0, "step": 0.05},
+	{"key": "sphere_strength",   "label": "球面贴图",   "min": 0.0, "max": 3.0, "step": 0.01},
+	{"key": "emission_strength", "label": "自发光",     "min": 0.0, "max": 3.0, "step": 0.01},
+]
+
 
 # ====================== 对外接口 ======================
 
@@ -254,10 +268,17 @@ func role_ramp_colors(pack: String, role: String) -> Array:
 
 # 烘焙某角色在某 pack 下的 toon 色阶贴图（128×1 RGBA，缓存复用）。
 func bake_ramp(pack: String, role: String) -> Texture2D:
-	var key := pack + ":" + role
+	return bake_ramp_from_colors(role_ramp_colors(pack, role))
+
+
+# 由显式三段颜色烘焙 toon 色阶贴图（编辑器实时改色用；按颜色串缓存复用）。
+# cols: [[r,g,b],[r,g,b],[r,g,b]]，t<0.5 在暗端↔中间插值，t>=0.5 在中间↔亮端插值。
+func bake_ramp_from_colors(cols: Array) -> Texture2D:
+	var key := ""
+	for c in cols:
+		key += "%.4f,%.4f,%.4f;" % [c[0], c[1], c[2]]
 	if _ramp_cache.has(key):
 		return _ramp_cache[key]
-	var cols: Array = role_ramp_colors(pack, role)
 	var c0 := Color(cols[0][0], cols[0][1], cols[0][2])
 	var c1 := Color(cols[1][0], cols[1][1], cols[1][2])
 	var c2 := Color(cols[2][0], cols[2][1], cols[2][2])
@@ -275,26 +296,54 @@ func bake_ramp(pack: String, role: String) -> Texture2D:
 	return tex
 
 
+# 取某角色在某 pack 下【合并覆盖后的有效参数】（基础预设 ∪ 运行期覆盖）。
+# 返回 dict 含 "toon"(三段[r,g,b]) 与各标量键；"default" 或无预设返回空 dict。
+func get_role_params(pack: String, role: String) -> Dictionary:
+	var base: Dictionary = {}
+	if pack_presets(pack).has(role):
+		base = pack_presets(pack)[role].duplicate(true)
+		# 预设表里自发光键名是 "emission"，而滑块/着色器 uniform 用 "emission_strength"：
+		# 归一化键名，避免 apply_role 读不到值而把自发光重置成 0。
+		if base.has("emission") and not base.has("emission_strength"):
+			base["emission_strength"] = base["emission"]
+	var ov: Dictionary = _overrides.get(pack + ":" + role, {})
+	for k in ov.keys():
+		base[k] = ov[k]
+	return base
+
+
+# 写入某角色在某 pack 下的逐部位覆盖值（运行期；key 缺省视为清除该键）。
+func set_role_override(pack: String, role: String, key: String, value) -> void:
+	var k := pack + ":" + role
+	if not _overrides.has(k):
+		_overrides[k] = {}
+	_overrides[k][key] = value
+
+
+# 清除某角色在某 pack 下的全部覆盖（还原 reze 默认）。
+func clear_role_override(pack: String, role: String) -> void:
+	_overrides.erase(pack + ":" + role)
+
+
 # 对单个材质套用角色预设（toon 色阶 + per-material uniform）。
-# 注意：调用方需【先】用 PMX 自身 toon 设好 toon_tex（见 mmd_builder._build_material），
-# 本函数仅在 role 命中时才覆盖 toon_tex 与角色相关 uniform；"default" 仅设中性值、不动 toon。
+# 优先用 get_role_params（含运行期覆盖），故 HUD 改完即时生效；"default" 仅设中性值、不动 toon。
 func apply_role(mat: ShaderMaterial, pack: String, role: String) -> void:
-	var presets := pack_presets(pack)
-	if role == "default" or not presets.has(role):
+	var p: Dictionary = get_role_params(pack, role)
+	if role == "default" or p.is_empty():
 		mat.set_shader_parameter("mat_saturation", 1.0)
 		mat.set_shader_parameter("mat_value", 1.0)
 		mat.set_shader_parameter("sphere_strength", 1.0)
 		return
-	var p: Dictionary = presets[role]
-	mat.set_shader_parameter("toon_tex", bake_ramp(pack, role))
-	mat.set_shader_parameter("mat_saturation", p.get("mat_saturation", 1.0))
-	mat.set_shader_parameter("mat_value", p.get("mat_value", 1.0))
-	mat.set_shader_parameter("sphere_strength", p.get("sphere_strength", 1.0))
-	mat.set_shader_parameter("rim_strength", p.get("rim_strength", 0.3))
+	var toon: Array = p.get("toon", [[0.30, 0.30, 0.30], [0.65, 0.65, 0.65], [1.0, 1.0, 1.0]])
+	mat.set_shader_parameter("toon_tex", bake_ramp_from_colors(toon))
+	mat.set_shader_parameter("mat_saturation", float(p.get("mat_saturation", 1.0)))
+	mat.set_shader_parameter("mat_value", float(p.get("mat_value", 1.0)))
+	mat.set_shader_parameter("sphere_strength", float(p.get("sphere_strength", 1.0)))
+	mat.set_shader_parameter("rim_strength", float(p.get("rim_strength", 0.3)))
 	var rc: Array = p.get("rim_color", [1.0, 0.85, 0.7])
 	mat.set_shader_parameter("rim_color", Vector3(rc[0], rc[1], rc[2]))
-	mat.set_shader_parameter("rim_power", p.get("rim_power", 3.0))
-	mat.set_shader_parameter("emission_strength", p.get("emission", mat.get_shader_parameter("emission_strength")))
+	mat.set_shader_parameter("rim_power", float(p.get("rim_power", 3.0)))
+	mat.set_shader_parameter("emission_strength", float(p.get("emission_strength", 0.0)))
 
 
 # 对所有材质套用 look pack + grade（全局 uniform，逐材质写入）。

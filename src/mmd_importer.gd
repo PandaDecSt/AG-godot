@@ -36,6 +36,11 @@ var _chk_morph: CheckBox = null
 var _mp_presets = null          # MaterialPresets 实例（运行态动态加载，避免依赖全局类表）
 var _cur_pack: String = "ag"    # 当前 look pack（ag / wuwa）
 var _cur_grade: String = "Neutral"
+# 逐部位编辑：role -> Array[ShaderMaterial]（由材质 meta "mp_role" 分组）
+var _role_mats: Dictionary = {}
+var _role_pick: OptionButton = null   # 部位选择下拉
+var _role_edit_box: VBoxContainer = null  # 当前部位参数控件容器
+var _editing_role: String = ""
 
 
 func _ready() -> void:
@@ -88,6 +93,7 @@ func _ready() -> void:
 	_mp_presets = (load("res://src/material_presets.gd") as Script).new()
 	_cur_pack = _mp_presets.default_pack()
 	_cur_grade = "Neutral"
+	_build_role_mats()          # 按材质 meta "mp_role" 分组，供逐部位编辑器与 pack 切换用
 	_apply_preset(_cur_pack, _cur_grade)
 
 	# 「图层栈」控制面板 LayerController 是 main.tscn 里与 ModelRoot 平级的静态节点
@@ -201,6 +207,7 @@ func _ready() -> void:
 	_add_outline_hud()
 	_add_motion_hud()
 	_add_preset_hud()   # reze 预设：Look pack / Grade 切换（AG/WuWa + 6 套 grade）
+	_add_role_editor()  # reze 预设：逐部位实时编辑（选部位→拉滑块/取色器→实时套用）
 
 
 # ---- 动作装配 ----
@@ -428,13 +435,184 @@ func _mk_check(text: String, pressed: bool, cb: Callable) -> CheckBox:
 
 
 # ---- reze 预设：套用当前 look pack + grade 到全部材质（全局 uniform 逐材质写入）----
+# 同时重新套用各部位的角色预设（含运行期覆盖），使切换 look pack 时色阶/边缘光也跟着换
+# （AG 灰度色阶 ↔ WuWa 彩色色阶在此切换；与 reze 的「look pack 改变整体观感」一致）。
 func _apply_preset(pack: String, grade: String) -> void:
 	_cur_pack = pack
 	_cur_grade = grade
 	if _mp_presets == null:
 		return
+	for r in _role_mats.keys():
+		for mat in _role_mats[r]:
+			_mp_presets.apply_role(mat, pack, r)
 	_mp_presets.apply_look(_mats, pack, grade)
+	# 编辑器若已打开，刷新成当前 pack 的值
+	if _role_edit_box != null and _editing_role != "":
+		_rebuild_role_controls()
 	print("PRESET apply_look pack=%s grade=%s  (材质数=%d)" % [pack, grade, _mats.size()])
+
+
+# 按材质 meta "mp_role" 把 _mats 分组：role -> Array[ShaderMaterial]。
+func _build_role_mats() -> void:
+	_role_mats.clear()
+	for mat in _mats:
+		if mat == null or not mat.has_meta("mp_role"):
+			continue
+		var r: String = mat.get_meta("mp_role")
+		if not _role_mats.has(r):
+			_role_mats[r] = []
+		_role_mats[r].append(mat)
+
+
+# ---- reze 逐部位编辑 HUD（右上角）：选部位→拉滑块/取色器→实时套用，带「还原 reze 默认」----
+# 对齐 reze-design 的「对每个部位的材质修改着色器预设」：节点图参数可单独调、随场景生效。
+func _add_role_editor() -> void:
+	if _mp_presets == null:
+		_mp_presets = (load("res://src/material_presets.gd") as Script).new()
+	var layer := CanvasLayer.new()
+	layer.layer = 128
+	var panel := Panel.new()
+	panel.position = Vector2(980, 8)
+	panel.custom_minimum_size = Vector2(300, 560)
+	layer.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.add_child(scroll)
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(280, 0)
+	scroll.add_child(box)
+
+	var head := Label.new()
+	head.text = "逐部位预设编辑（reze 风格）"
+	box.add_child(head)
+
+	_role_pick = OptionButton.new()
+	var roles: Array = _mp_presets.role_list()
+	for r in roles:
+		if _role_mats.has(r) and _role_mats[r].size() > 0:
+			_role_pick.add_item(r)
+	if _role_pick.item_count > 0:
+		_role_pick.selected = 0
+		_editing_role = _role_pick.get_item_text(0)
+	box.add_child(_role_pick)
+	_role_pick.item_selected.connect(_on_role_selected)
+
+	var reset := Button.new()
+	reset.text = "还原 reze 默认"
+	box.add_child(reset)
+	reset.pressed.connect(_on_role_reset)
+
+	_role_edit_box = VBoxContainer.new()
+	box.add_child(_role_edit_box)
+	_rebuild_role_controls()
+
+	get_tree().root.call_deferred("add_child", layer)
+	print("HUD: 右上角已添加「逐部位预设编辑」面板（部位：%s）" % _role_pick.get_item_text(0) if _role_pick.item_count > 0 else "无")
+
+
+func _on_role_selected(idx: int) -> void:
+	if _role_pick == null or idx < 0 or idx >= _role_pick.item_count:
+		return
+	_editing_role = _role_pick.get_item_text(idx)
+	_rebuild_role_controls()
+
+
+# 重建当前部位的参数控件（读取 get_role_params，反映 reze 默认或运行期覆盖）。
+func _rebuild_role_controls() -> void:
+	if _role_edit_box == null or _editing_role == "":
+		return
+	for c in _role_edit_box.get_children():
+		c.queue_free()
+	var params: Dictionary = _mp_presets.get_role_params(_cur_pack, _editing_role)
+
+	# 色阶三段（暗端 / 中间 / 亮端）取色器
+	var toon: Array = params.get("toon", [[0.30, 0.30, 0.30], [0.65, 0.65, 0.65], [1.0, 1.0, 1.0]])
+	var tnames := ["色阶·暗端", "色阶·中间", "色阶·亮端"]
+	for i in 3:
+		var row := HBoxContainer.new()
+		var lab := Label.new()
+		lab.text = tnames[i]
+		lab.custom_minimum_size = Vector2(86, 0)
+		row.add_child(lab)
+		var cp := ColorPickerButton.new()
+		cp.color = Color(toon[i][0], toon[i][1], toon[i][2])
+		row.add_child(cp)
+		cp.color_changed.connect(_on_role_toon_color_changed.bind(i))
+		_role_edit_box.add_child(row)
+
+	# 标量滑块（来自 material_presets.ROLE_SLIDERS）
+	for s in _mp_presets.ROLE_SLIDERS:
+		var key: String = s["key"]
+		var row := HBoxContainer.new()
+		var lab := Label.new()
+		lab.text = s["label"]
+		lab.custom_minimum_size = Vector2(86, 0)
+		row.add_child(lab)
+		var sl := HSlider.new()
+		sl.min_value = float(s["min"]); sl.max_value = float(s["max"]); sl.step = float(s["step"])
+		sl.value = float(params.get(key, 1.0))
+		sl.custom_minimum_size = Vector2(130, 0)
+		row.add_child(sl)
+		var val := Label.new()
+		val.text = "%.2f" % sl.value
+		val.custom_minimum_size = Vector2(44, 0)
+		row.add_child(val)
+		sl.value_changed.connect(func(v: float):
+			val.text = "%.2f" % v
+			_on_role_slider_changed(key, v))
+		_role_edit_box.add_child(row)
+
+	# 边缘光颜色取色器
+	var rc: Array = params.get("rim_color", [1.0, 0.85, 0.7])
+	var rrow := HBoxContainer.new()
+	var rlab := Label.new()
+	rlab.text = "边缘光颜色"
+	rlab.custom_minimum_size = Vector2(86, 0)
+	rrow.add_child(rlab)
+	var rcp := ColorPickerButton.new()
+	rcp.color = Color(rc[0], rc[1], rc[2])
+	rrow.add_child(rcp)
+	rcp.color_changed.connect(_on_role_rim_color_changed)
+	_role_edit_box.add_child(rrow)
+
+
+func _on_role_slider_changed(key: String, v: float) -> void:
+	if _editing_role == "":
+		return
+	_mp_presets.set_role_override(_cur_pack, _editing_role, key, v)
+	_reapply_editing_role()
+
+
+func _on_role_toon_color_changed(c: Color, idx: int) -> void:
+	if _editing_role == "":
+		return
+	var params: Dictionary = _mp_presets.get_role_params(_cur_pack, _editing_role)
+	var cols: Array = params.get("toon", [[0.30, 0.30, 0.30], [0.65, 0.65, 0.65], [1.0, 1.0, 1.0]]).duplicate(true)
+	cols[idx] = [c.r, c.g, c.b]
+	_mp_presets.set_role_override(_cur_pack, _editing_role, "toon", cols)
+	_reapply_editing_role()
+
+
+func _on_role_rim_color_changed(c: Color) -> void:
+	if _editing_role == "":
+		return
+	_mp_presets.set_role_override(_cur_pack, _editing_role, "rim_color", [c.r, c.g, c.b])
+	_reapply_editing_role()
+
+
+func _reapply_editing_role() -> void:
+	if _editing_role == "" or not _role_mats.has(_editing_role):
+		return
+	for mat in _role_mats[_editing_role]:
+		_mp_presets.apply_role(mat, _cur_pack, _editing_role)
+
+
+func _on_role_reset() -> void:
+	if _editing_role == "":
+		return
+	_mp_presets.clear_role_override(_cur_pack, _editing_role)
+	_reapply_editing_role()
+	_rebuild_role_controls()
 
 
 # ---- reze 预设 HUD（左下角）：Look pack（AG/WuWa）与 Grade（6 套）实时切换 ----

@@ -131,3 +131,28 @@ toon 贴图从**灰度 .r** 升级成**彩色 .rgb 三段色阶**（由 `bake_ra
 - `preset_test.gd`：apply_role(hair) 拿到 Texture2D 色阶、mat_saturation=1.4；apply_role(default) 只设中性值；apply_look(wuwa/Bloody) 拿到 exposure=1.0 / tonemap_mode=0 / 分色调 RGB；bake_ramp 缓存命中。
 - `verify.gd`（真实建模）：所有材质 `MATPRESET ... -> role=... pack=ag` 无 `default` 漏网，无 SCRIPT ERROR（仅 dummy 渲染器正常的 RID 泄漏警告，可忽略）。
 - 分类对照：`.test/ag_vmdtest/cltest.txt`（已修正 `stocking→stockings`）。
+
+---
+
+## 九、逐部位实时编辑（HUD，对齐 reze「改每个部位的着色器预设」）
+
+reze 的 `graph-editor` 能单独调每个部位节点图的参数（色阶/饱和度/边缘光…）并随场景生效。
+我们这边用**运行时 HUD**实现同一能力（F5 后右上角「逐部位预设编辑」面板）：
+
+1. **选部位**：下拉选 `body / face / hair / eye / cloth_smooth / cloth_rough / stockings / metal / accent`（只列出本模型实际存在的）。
+2. **调参数**，实时套用到该部位全部材质：
+   - 色阶三段取色器（暗端 / 中间 / 亮端）—— 对应 reze `ramp_cardinal` 的 color0/color1 + 白，驱动 `toon_tex` 重新烘焙；
+   - 6 个滑块：饱和度 / 明度 / 边缘光强度 / 边缘光锐度 / 球面贴图强度 / 自发光；
+   - 边缘光颜色取色器。
+3. **「还原 reze 默认」**按钮：清掉该部位的运行期覆盖，回到 `AG`/`WUWA` 表里抄来的原值。
+
+**机制**（数据全在 `material_presets.gd`）：
+- `mmd_builder` 建材质时把角色写进 `mat.set_meta("mp_role", role)`；
+- `mmd_importer._build_role_mats()` 按 meta 把 `_mats` 分组成 `role → [材质...]`；
+- 改一个滑块 = `set_role_override(pack, role, key, v)` → `apply_role(每块该部位材质)` 即时重设 uniform；
+- 覆盖存在内存 `_overrides["pack:role"]`，**不落盘**（关场景即丢），与 reze「随场景可改不可持久」一致；
+- 切 Look pack（AG↔WuWa）时 `_apply_preset` 会**连同逐部位预设一起重套**，于是 WuWa 的彩色色阶会替换 AG 的灰度色阶——这点和 reze「换 look 整体观感变」一致。
+
+**验证**：`src/diag/preset_edit_test.gd`（headless）确认覆盖/还原/`bake_ramp_from_colors` 缓存/两主脚本可解析全绿。
+
+> 注意：HUD 是 Control 节点，最终观感（滑块布局、取色器弹出、实时跟手）需你 F5 肉眼确认；逻辑层已无头验证通过。
