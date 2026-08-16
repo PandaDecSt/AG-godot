@@ -21,3 +21,6 @@ desktop.ini
 .DS_Store
 *.tmp
 *.log
+
+# GDExtension 被覆盖时编辑器留下的旧 dll 备份
+addons/mmd_phys_ext/bin/~*
