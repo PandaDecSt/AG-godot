@@ -214,6 +214,38 @@ func set_gravity(gx: float, gy: float, gz: float) -> void:
 		_phys.set_gravity(gx, gy, gz)
 
 
+func get_gravity() -> Vector3:
+	if _phys != null:
+		return _phys.get_gravity()
+	return Vector3(0.0, -98.0, 0.0)
+
+
+# P3 风系统：方向任意长度(内部归一化), strength==0 或 dir 全零=关风。
+# turbulence/frequency 控制阵风（0=恒定风）。方向在世界空间：x=横向 y=上下 z=纵深。
+func set_wind(dx: float, dy: float, dz: float, strength: float, turbulence: float, frequency: float) -> void:
+	if _phys != null:
+		_phys.set_wind(dx, dy, dz, strength, turbulence, frequency)
+
+
+func get_wind() -> Dictionary:
+	if _phys != null:
+		return _phys.get_wind()
+	return {}
+
+
+# P3 可复现随机种子(顺序随机化)：默认 0, 与 P2b 之前行为一致。
+# 设成固定非零值可让"同一场景每次跑得一模一样"（便于复现/调试抖动）。
+func set_order_seed(p_seed: int) -> void:
+	if _phys != null:
+		_phys.set_order_seed(p_seed)
+
+
+func get_order_seed() -> int:
+	if _phys != null:
+		return _phys.get_order_seed()
+	return 0
+
+
 func is_ready() -> bool:
 	return _phys != null
 

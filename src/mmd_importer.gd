@@ -21,6 +21,16 @@ const AUTO_DEBUG_SHOTS := false
 # 物理需要 addons/mmd_phys_ext 里的 GDExtension（已编译的 .dll）正常加载。
 const ENABLE_PHYSICS := true
 
+# 默认风（P3 风系统）：F5 一进场景头发/裙子就被微风吹动。关掉 ENABLE_WIND 则无风（纯重力）。
+# 方向在世界空间：x=横向、y=上下、z=纵深（FLIP_Z 只翻 z，故 x/y 方向在 MMD/Godot 空间一致）。
+# strength 是加速度量级，重力默认 98；6 太弱(≈6%)几乎看不出，这里取 ~0.25 倍=明显可见又不夸张。
+# 想更猛在 HUD「物理/风」标签页把强度拉到 50~100 即可。
+const ENABLE_WIND := true
+const WIND_DIR := Vector3(1.0, 0.0, 0.0)   # 朝 +X 横吹
+const WIND_STRENGTH := 25.0                 # 风加速度(相对重力 98)；HUD 可实时调 0~100
+const WIND_TURB := 0.25                     # 阵风扰动幅度(0~1)：0=恒定风，越大越"一阵一阵"
+const WIND_FREQ := 0.8                      # 阵风频率(Hz)
+
 var _mats: Array = []
 var _outline_pairs: Array = []
 var _layer_ctrl = null
@@ -66,6 +76,22 @@ var _left_scroll: ScrollContainer = null
 var _right_scroll: ScrollContainer = null
 var _left_w: float = 312.0
 var _right_w: float = 346.0
+
+# 物理 / 风 调参状态：运行期改值走 _apply_wind / _apply_gravity，滑块初值直接读上方常量，
+# 不需要把初值再缓存成成员（之前那几个 _wind_* / _gravity_mag 缓存成员从未被读，已删除）。
+var _phys_inst = null              # MMDPhysicsGD 实例（_setup_motion 时赋值，物理关则为 null）
+var _skeleton_inst: Skeleton3D = null   # 供「重置物理」按钮用
+
+# HUD「物理/风」标签页控件引用（构建时赋值）
+var _wind_enabled_chk: CheckBox = null
+var _wind_x_s: HSlider = null
+var _wind_y_s: HSlider = null
+var _wind_z_s: HSlider = null
+var _wind_str_s: HSlider = null
+var _wind_turb_s: HSlider = null
+var _wind_freq_s: HSlider = null
+var _grav_s: HSlider = null
+var _seed_edit: LineEdit = null
 
 
 func _ready() -> void:
@@ -263,7 +289,14 @@ func _setup_motion(model: Dictionary, res: Dictionary) -> void:
 		var phys := MMDPhysicsGD.new()
 		phys.initialize(res["skeleton"], model["rigidbodies"], model["joints"])
 		if phys.is_ready():
+			if ENABLE_WIND:
+				phys.set_wind(WIND_DIR.x, WIND_DIR.y, WIND_DIR.z, WIND_STRENGTH, WIND_TURB, WIND_FREQ)
+				print("WIND: 默认风已开启 dir=%s strength=%.1f turb=%.2f freq=%.2f"
+					% [WIND_DIR, WIND_STRENGTH, WIND_TURB, WIND_FREQ])
 			_player.set_physics(phys)
+			# 供 HUD「物理/风」标签页实时调参 + 「重置物理」按钮使用
+			_phys_inst = phys
+			_skeleton_inst = res["skeleton"]
 			print("PHYSICS: 已挂载到播放器（%d 刚体 / %d 关节，受驱动骨骼见初始化日志）" % [
 				model["rigidbodies"].size(), model["joints"].size()])
 		else:
@@ -601,6 +634,7 @@ func _build_left_dock(vb: VBoxContainer) -> void:
 		grade_btn.selected = maxi(0, grades.find(_cur_grade)); vb.add_child(grade_btn)
 		grade_btn.item_selected.connect(func(idx: int):
 			if idx >= 0 and idx < grades.size(): _apply_preset(_cur_pack, grades[idx]))
+	_build_phys_dock(vb)
 	var hint := Label.new()
 	hint.text = "空格=播/停  R=重播  I=IK  M=表情  H=面板"
 	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.78))
@@ -656,6 +690,78 @@ func _build_right_dock(tabs: TabContainer) -> void:
 	_refresh_mat_preset_ui()
 
 
+# ---- 物理 / 风 调参面板（左侧「播放 / 外观」面板内的一个 section）----
+# 所有控件在 _phys_inst 存在时连到 C++ 物理世界；物理未启用则只显示提示。
+func _build_phys_dock(vb: VBoxContainer) -> void:
+	_add_hsep(vb)
+	var head := Label.new(); head.text = "物理 / 风"
+	head.add_theme_color_override("font_color", Color(0.82, 0.68, 1.0))
+	head.add_theme_font_size_override("font_size", 14)
+	vb.add_child(head)
+
+	if _phys_inst == null:
+		vb.add_child(_mk_label("（物理未启用：ENABLE_PHYSICS=false 或扩展未加载）"))
+		return
+
+	# —— 风 ——
+	vb.add_child(_mk_label("风"))
+	_wind_enabled_chk = _mk_check("启用风", ENABLE_WIND, func(on: bool):
+		if on: _apply_wind() else: _phys_inst.set_wind(0, 0, 0, 0, 0, 0))
+	vb.add_child(_wind_enabled_chk)
+	vb.add_child(_mk_label("方向（世界空间：X 横 / Y 上 / Z 纵）"))
+	_wind_x_s = _mk_slider(vb, "X", -1.0, 1.0, 0.05, WIND_DIR.x, "%.2f", func(_v): _apply_wind())
+	_wind_y_s = _mk_slider(vb, "Y", -1.0, 1.0, 0.05, WIND_DIR.y, "%.2f", func(_v): _apply_wind())
+	_wind_z_s = _mk_slider(vb, "Z", -1.0, 1.0, 0.05, WIND_DIR.z, "%.2f", func(_v): _apply_wind())
+	_wind_str_s = _mk_slider(vb, "强度", 0.0, 60.0, 0.5, WIND_STRENGTH, "%.1f m/s²", func(_v): _apply_wind())
+	_wind_turb_s = _mk_slider(vb, "阵风幅度", 0.0, 1.0, 0.01, WIND_TURB, "%.2f", func(_v): _apply_wind())
+	_wind_freq_s = _mk_slider(vb, "阵风频率", 0.0, 3.0, 0.05, WIND_FREQ, "%.2f Hz", func(_v): _apply_wind())
+	_add_hsep(vb)
+
+	# —— 重力 ——
+	vb.add_child(_mk_label("重力"))
+	var g0: float = -_phys_inst.get_gravity().y   # 默认 -98 → 大小 98
+	_grav_s = _mk_slider(vb, "大小", 0.0, 150.0, 1.0, g0, "%.0f m/s²", func(_v): _apply_gravity())
+	_add_hsep(vb)
+
+	# —— 顺序随机化种子 ——
+	vb.add_child(_mk_label("顺序随机化种子"))
+	vb.add_child(_mk_label("固定非零值 → 同一场景每次跑得一模一样（便于复现抖动）"))
+	var seed_row := HBoxContainer.new(); vb.add_child(seed_row)
+	_seed_edit = LineEdit.new(); _seed_edit.placeholder_text = "0"; _seed_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	seed_row.add_child(_seed_edit)
+	var seed_btn := Button.new(); seed_btn.text = "应用"; seed_row.add_child(seed_btn)
+	seed_btn.pressed.connect(func():
+		var v: int = 0
+		if _seed_edit.text.is_valid_int():
+			v = _seed_edit.text.to_int()
+		_phys_inst.set_order_seed(v)
+		print("PHYSICS: 顺序随机种子 = ", v))
+	_add_hsep(vb)
+
+	# —— 操作 ——
+	var reset_btn := Button.new(); reset_btn.text = "重置物理（吸附到当前骨骼）"
+	reset_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL; vb.add_child(reset_btn)
+	reset_btn.pressed.connect(func():
+		if _phys_inst != null and _skeleton_inst != null:
+			_phys_inst.reset(_skeleton_inst)
+			print("PHYSICS: 已重置"))
+
+
+# 把所有风滑块的值汇总后写给物理世界（启用风时调用）。
+func _apply_wind() -> void:
+	if _phys_inst == null or _wind_enabled_chk == null or not _wind_enabled_chk.button_pressed:
+		return
+	_phys_inst.set_wind(
+		_wind_x_s.value, _wind_y_s.value, _wind_z_s.value,
+		_wind_str_s.value, _wind_turb_s.value, _wind_freq_s.value)
+
+
+func _apply_gravity() -> void:
+	if _phys_inst == null or _grav_s == null:
+		return
+	_phys_inst.set_gravity(0.0, -_grav_s.value, 0.0)
+
+
 # ---- 动作播放 HUD（左下角）----
 # 做成运行态 HUD 而不是 Inspector 属性，理由同描边滑块：编辑态改属性对运行时实例不生效。
 # （已废弃）原 _add_motion_hud：其逻辑已并入 _build_left_dock，统一进现代化 HUD 系统。
@@ -668,6 +774,24 @@ func _mk_check(text: String, pressed: bool, cb: Callable) -> CheckBox:
 	c.button_pressed = pressed
 	c.toggled.connect(cb)
 	return c
+
+
+# 带「标签: 当前值」的滑块行。cb 在值变化时调用（传 float 值）。回显格式用 fmt % 值。
+# parent 直接收到该行（VBox[Label+HSlider]），返回的 HSlider 已被包进行内、调用方不要再 add_child。
+func _mk_slider(parent: Node, txt: String, minv: float, maxv: float, stepv: float, valuev: float, fmt: String, cb: Callable) -> HSlider:
+	var row := VBoxContainer.new()
+	var lab := Label.new()
+	lab.text = "%s: %s" % [txt, fmt % valuev]
+	row.add_child(lab)
+	var s := HSlider.new()
+	s.min_value = minv; s.max_value = maxv; s.step = stepv; s.value = valuev
+	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(s)
+	s.value_changed.connect(func(v: float):
+		lab.text = "%s: %s" % [txt, fmt % v]
+		cb.call(v))
+	parent.add_child(row)
+	return s
 
 
 # ---- reze 预设：套用当前 look pack + grade 到全部材质（全局 uniform 逐材质写入）----
