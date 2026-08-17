@@ -46,6 +46,16 @@ script = ExtResource("1_mmdimporter")
 
 [node name="LayerController" type="Node" parent="." unique_id=1732165456]
 script = ExtResource("3_mmdlayers")
+shadow_softness = 0.5
+shadow_blur = 0.5
+shadow_bias = 0.05
+shadow_normal_bias = 1.5
+shadow_pcf_quality = "Ultra"
+shadow_texture_size = "4096"
+shadow_mode = "Single ortho"
+shadow_max_distance = 60.0
+shadow_tight_fit = true
+shadow_tight_margin = 4.0
 
 [node name="SunLight" type="DirectionalLight3D" parent="." unique_id=1430552523]
 transform = Transform3D(1, 0, 0, 0, 0.42261824, 0.9063078, 0, -0.9063078, 0.42261824, 0, 0, 0)
@@ -61,6 +71,6 @@ cast_shadow = 0
 mesh = SubResource("PlaneMesh_ground")
 
 [node name="ShadowTestBox" type="MeshInstance3D" parent="." unique_id=188223344]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 2.5, 2)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 15.737245, 2)
 material_override = SubResource("StdMat_test")
 mesh = SubResource("BoxMesh_test")

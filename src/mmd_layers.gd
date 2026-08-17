@@ -35,16 +35,35 @@ extends Node
 
 # 抗锯齿（全局渲染设置，挂根视口 Viewport）：
 #   Disabled / MSAA 2x / 4x / 8x（多重采样，边缘最干净、不鬼影）/ FXAA / SMAA（屏幕空间后处理，略模糊）。
-#   本场景用自定义着色器 + 相机自由旋转，默认 MSAA 4x；不列 TAA（时域累积在相机移动时会产生鬼影）。
+#   本场景用自定义着色器 + 相机自由旋转，默认 MSAA 4x。
+#   TAA 时域抗锯齿单独做成开关（taa_enabled）：默认关——它把上一帧画面“拖”进来做累积，
+#   自由旋转相机时会产生鬼影/拖影；想对比观感（远处抖动更顺）可临时勾上，看完再取消。
 @export_enum("Disabled", "MSAA 2x", "MSAA 4x", "MSAA 8x", "FXAA", "SMAA") var aa_mode := "MSAA 4x"
+@export var taa_enabled := false   # TAA 时域抗锯齿开关：勾=开（远处抖动更顺，但转相机有鬼影/拖影），取消=关（默认，画面干净）。运行时即时生效
+@export var shadow_enabled := true   # 阴影主开关：勾=开启(角色自阴影+地面投影)，取消=完全关闭阴影显示。注意与下方 shadow_quality 的 "Off" 不同——"Off" 是【硬边阴影】(仍渲染)，本开关才是【不渲染阴影】
 # 柔阴影（挂 SunLight + 项目设置）：
-@export_range(0.0, 5.0, 0.1) var shadow_softness := 1.5   # 方向光区域光大小=半影宽度：0=硬阴影(边缘锐利)，越大阴影边缘越柔（实时生效）。脸部自阴影默认给一点柔和半影，遮住低分辨率纹素边
+@export_range(0.0, 5.0, 0.1) var shadow_softness := 2.0   # 方向光区域光大小=半影宽度(→light_angular_distance)：0=硬阴影(边缘锐利)，越大 PCF 模糊越宽、把 15-tap 采样的颗粒平均掉（实时生效）。脸部自阴影默认给一点柔和半影遮低分辨率纹素边；调太大阴影会糊(与"脸要清晰"冲突)，故不过度加
+@export_range(0.0, 4.0, 0.1) var shadow_blur := 0.0   # 阴影模糊半径倍增(→_sun.shadow_blur)：与上方 light_angular_distance(PCSS角径)是【两个不同机制】。官方文档提示：blur 越大，会把过滤产生的颗粒图案【越明显】(故默认0，先不动)。你加这个是为了亲手对比 shadow_blur 与 shadow_softness 的区别（实时生效，需 softness>0 才看得出效果）
 @export_range(0.0, 0.5, 0.01) var shadow_bias := 0.5      # 阴影偏移：过小=自阴影痤疮(acne，点状噪点)，过大=悬浮(peter-panning)（实时生效）。开柔阴影后 PCF 跨纹素采样，需比硬阴影更大的 bias 才能压住黑点
 @export_range(0.0, 2.0, 0.05) var shadow_normal_bias := 0.9   # 法线偏移：对骨骼蒙皮曲面消 acne 特别有效（实时生效）
-@export_enum("Off", "Low", "Medium", "High", "Ultra") var shadow_quality := "High"   # PCF 采样质量（项目设置，改后可能需 Reload 当前项目生效）。脸部自阴影默认 High，减少块状噪点
+@export_enum("Off", "Low", "Medium", "High", "Ultra") var shadow_pcf_quality := "Ultra"   # 阴影采样质量(PCF 采样级别)：3D 方向光唯一的“调高 PCF 采样”开关，经 RenderingServer.directional_soft_shadow_filter_set_quality() 运行时实时生效(无需重载)。档位=采样数/模糊质量：Off=硬边(0采样平滑)、Low=1、Medium=2、High=4、Ultra=5(最多采样→边缘最平滑、颗粒最细)。⚠️"Off"=硬边阴影(仍渲染、只是边缘锐利)，【不是】关闭阴影显示——要彻底关阴影请用上方 shadow_enabled。Godot 枚举 Ultra=5(非4)。
 # 阴影分辨率 + 覆盖范围（方向光阴影尺寸是【项目级设置】，不是逐光源属性；本工程已 8192=最大）：
-@export_enum("2048", "4096", "8192") var shadow_texture_size := "8192"   # 方向光阴影图尺寸(项目设置)：越大脸部纹素越密、越清晰（占显存，单角色 8192 足够；降 4096 可省显存）
-@export_range(20.0, 200.0, 5.0) var shadow_max_distance := 60.0   # 方向光阴影覆盖范围(世界单位)：越小越把分辨率集中到角色附近，脸部自阴影越锐利（实时生效）
+@export_enum("2048", "4096", "8192") var shadow_texture_size := "8192"   # 方向光阴影图尺寸：经 RenderingServer.directional_shadow_atlas_set_size() 运行时实时生效(无需重载)；越大脸部纹素越密、越清晰（占显存，单角色 8192 足够；降 4096 可省显存）
+@export_range(20.0, 200.0, 5.0) var shadow_max_distance := 60.0   # 方向光阴影覆盖范围(世界单位)：越小，同样的 8192 阴影图被压进越浅的深度→每世界单位纹素数越密→PCF 颗粒越少、脸自阴影越锐利(实时生效)。代价：超出范围的地面不再接收阴影。角色特写 15~25 最佳，拉远看全身可调大
+# 阴影分屏模式（治“投远放大”条纹的关键）：
+#   "PSSM 4-split" = 默认，视锥按相机距离切 4 段、每段独立阴影图。远段分辨率低→角色高、影子投远→落进远段→条纹被放大(你看到的症状)。
+#   "Single ortho"  = 不分屏，整段用【一张】正交阴影图(分辨率沿深度均匀分布，无“远段稀释”)。这正是 reze 的做法(单张紧贴角色阴影图)。
+#                     代价：单图覆盖 0..max_distance 整段，若 max_distance 过大近处会偏糊；故配合把 max_distance 收到角色+落地影子范围内(≈40~60)即干净。
+#                     此模式 = “路A”在 Godot 内的原生实现(单张紧贴阴影图)，无需自研纹理模糊管线(那要改引擎)。
+@export_enum("PSSM 4-split", "Single ortho") var shadow_mode := "PSSM 4-split"
+@export var shadow_blend_splits := false   # 分屏接缝平滑(仅 PSSM 模式有效)：牺牲一点细节换分段间过渡更顺，对“规则条纹/接缝亮带”有帮助。Single 模式忽略
+@export_range(0.0, 100.0, 1.0) var shadow_pancake_size := 20.0   # 阴影相机近平面偏移(提高有效深度分辨率)：默认20；若出现大物体边缘伪影可下调(设0=关闭)。Single 模式下调可进一步压条纹
+# 贴身阴影框（治“近处锯齿/远段条纹”的免费杠杆）：
+#   每帧把 directional_shadow_max_distance 自动收到“刚好包住 角色 + 它投到地面的影子落点 + 余量”。
+#   8192 阴影图因此压进最小世界范围→密度最高→脚下/投远影子都最清晰。无额外 GPU 开销（阴影图本来就每帧重画）。
+#   代价：Godot 阴影范围绑定相机视锥，故密度上限仍受“相机离角色多远”卡着——相机近时最干净，相机远时效果有限。
+@export var shadow_tight_fit := true   # 勾=自动贴身收紧(覆盖下方手动值)；取消=用上方 shadow_max_distance 手动值
+@export_range(1.0, 20.0, 0.5) var shadow_tight_margin := 4.0   # 贴身余量(世界单位)：防影子落点被切边；越小密度越高但越易丢远端影子
 @export var ground_enabled := true       # 显示/隐藏接收阴影的地面（角色投影落其上；F5 想只看角色可取消勾选）
 
 # 合成顺序：图层 ID 的排列，越靠前越先合成（数组长度保持 5，内容 0..4 互不重复）。
@@ -54,14 +73,23 @@ var _mats: Array = []
 var _outline_pairs: Array = []   # 元素为 [base_material, outline_material]
 var _env: Environment = null      # 缓存场景 Environment（辉光挂在它上面，全屏后期）
 var _sun: DirectionalLight3D = null   # 缓存 SunLight 节点（柔阴影参数挂它上面）
-var _ground = null                  # 缓存接收阴影的地面（显隐由 ground_enabled 控制）
+var _ground: Node3D = null          # 缓存接收阴影的地面（显隐由 ground_enabled 控制）
 var _last_aa := ""
+var _last_taa := false
 var _last_soft := -1.0
+var _last_blur := -1.0
 var _last_bias := -1.0
 var _last_nb := -1.0
 var _last_sq := ""
 var _last_ts := ""
 var _last_md := -1.0
+var _last_mode := ""
+var _last_blend := false
+var _last_pancake := -1.0
+var _last_tight := true          # shadow_tight_fit 上次值(切换时清缓存强制重写)
+var _last_fit_md := -1.0         # 贴身模式算出的 max_distance 上次值
+var _char_mesh: VisualInstance3D = null   # 角色网格(取世界 AABB 用)，懒解析缓存
+var _last_shadow_on := true
 const DOF_EFFECT := preload("res://src/dof_compositor.gd")
 var _dof_effect: DOFEffect = null
 
@@ -127,6 +155,7 @@ func _process(_dt: float) -> void:
 	if _sun == null:
 		_sun = get_parent().get_node_or_null("SunLight")
 	_apply_aa()
+	_apply_taa()
 	_apply_shadow()
 	if _ground != null:
 		_ground.visible = ground_enabled
@@ -159,35 +188,81 @@ func _apply_aa() -> void:
 			vp.msaa_3d = Viewport.MSAA_DISABLED
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_SMAA
 
-# 柔阴影：半影宽度(shadow_softness→light_angular_distance) 与 偏移(shadow_bias) 是 DirectionalLight3D 实时属性；
-# 采样质量(shadow_quality) 走项目设置，改后通常即时，个别驱动可能需 Reload 当前项目。
+# TAA 时域抗锯齿：独立于 MSAA/FXAA 的全局开关。
+# 关键坑：TAA 是「视口属性」(Viewport.use_taa)，不是单纯的项目设置——运行时改 ProjectSettings
+# 不会让已在跑的根视口重新套用，必须直接写根视口的 use_taa 属性才会即时生效。
+# （之前硬编码在 project.godot 是“加载时”读进根视口的，所以那时有效；纯运行时改 setting 无效。）
+# TAA 把历史帧累积进当前帧做超采样，远处高频抖动更顺，但相机运动时历史帧对不齐 → 鬼影/拖影。
+# 本场景相机自由旋转，故默认关；想对比观感可临时勾上 taa_enabled（运行时即时生效）。
+func _apply_taa() -> void:
+	if taa_enabled == _last_taa:
+		return
+	_last_taa = taa_enabled
+	var vp := get_tree().get_root().get_viewport()
+	vp.use_taa = taa_enabled
+	# 同步项目设置（作为“默认值”保持一致；个别驱动在窗口重配置时会回读，避免被覆盖回关）。
+	ProjectSettings.set_setting("rendering/anti_aliasing/quality/use_taa", taa_enabled)
+
+# 柔阴影：半影宽度(shadow_softness→light_angular_distance)、偏移(shadow_bias/shadow_normal_bias)、覆盖范围(shadow_max_distance) 是 DirectionalLight3D 实时属性；
+# 而采样质量(shadow_pcf_quality)、阴影图尺寸(shadow_texture_size) 虽是方向光【整屏共享】设置(非逐光源)，但 Godot 提供 RenderingServer 运行时接口，可直接实时调整(无需改 project.godot、无需重载项目)。
 func _apply_shadow() -> void:
 	if _sun != null:
+		if shadow_enabled != _last_shadow_on:
+			_sun.shadow_enabled = shadow_enabled
+			_last_shadow_on = shadow_enabled
 		if shadow_softness != _last_soft:
 			_sun.light_angular_distance = shadow_softness
 			_last_soft = shadow_softness
+		if shadow_blur != _last_blur:
+			_sun.shadow_blur = shadow_blur
+			_last_blur = shadow_blur
 		if shadow_bias != _last_bias:
 			_sun.shadow_bias = shadow_bias
 			_last_bias = shadow_bias
 		if shadow_normal_bias != _last_nb:
 			_sun.shadow_normal_bias = shadow_normal_bias
 			_last_nb = shadow_normal_bias
-		# 阴影图分辨率：方向光是【整屏共享】阴影图，尺寸是项目级设置(非逐光源属性)，走 ProjectSettings 实时改。
+		# 阴影图分辨率：方向光【整屏共享】阴影图；尺寸用 RenderingServer 运行时接口直接设，实时生效、无需改 project.godot、无需重载。
 		if shadow_texture_size != _last_ts:
-			var ts := 2048
+			var ts := 8192
 			match shadow_texture_size:
+				"2048": ts = 2048
 				"4096": ts = 4096
 				"8192": ts = 8192
-			ProjectSettings.set_setting("rendering/lights_and_shadows/directional_shadow/size", ts)
+			RenderingServer.directional_shadow_atlas_set_size(ts, true)  # true=16bit 深度(省显存且质量无损)
 			_last_ts = shadow_texture_size
-		# 阴影覆盖范围：方向光逐光源属性，实时生效，把 8192 分辨率集中到角色附近。
-		if shadow_max_distance != _last_md:
-			_sun.directional_shadow_max_distance = shadow_max_distance
-			_last_md = shadow_max_distance
-	if shadow_quality != _last_sq:
-		_last_sq = shadow_quality
+		# 阴影覆盖范围：方向光逐光源属性，实时生效。
+		# 贴身模式(shadow_tight_fit)下每帧自动收到“角色+地面影子落点+余量”，密度最高；
+		# 否则用手动 shadow_max_distance。模式切换时强制重写(清两个缓存)。
+		if shadow_tight_fit != _last_tight:
+			_last_md = -1.0
+			_last_fit_md = -1.0
+			_last_tight = shadow_tight_fit
+		if shadow_tight_fit:
+			var fit_md := _compute_tight_max_distance()
+			if fit_md > 0.0 and abs(fit_md - _last_fit_md) > 0.5:
+				_sun.directional_shadow_max_distance = fit_md
+				_last_fit_md = fit_md
+		else:
+			if shadow_max_distance != _last_md:
+				_sun.directional_shadow_max_distance = shadow_max_distance
+				_last_md = shadow_max_distance
+		# 分屏模式：PSSM 4-split(默认) vs Single ortho(单张紧贴阴影图，reze 式，治投远条纹)。
+		if shadow_mode != _last_mode:
+			_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if shadow_mode == "PSSM 4-split" else DirectionalLight3D.SHADOW_ORTHOGONAL
+			_last_mode = shadow_mode
+		# 分屏接缝平滑(仅 PSSM 模式有效)。
+		if shadow_blend_splits != _last_blend:
+			_sun.directional_shadow_blend_splits = shadow_blend_splits
+			_last_blend = shadow_blend_splits
+		# 阴影相机近平面偏移(深度分辨率)；Single 模式下下调可进一步压条纹。
+		if shadow_pancake_size != _last_pancake:
+			_sun.directional_shadow_pancake_size = shadow_pancake_size
+			_last_pancake = shadow_pancake_size
+	if shadow_pcf_quality != _last_sq:
+		_last_sq = shadow_pcf_quality
 		var q := 2
-		match shadow_quality:
+		match shadow_pcf_quality:
 			"Off":
 				q = 0
 			"Low":
@@ -195,10 +270,64 @@ func _apply_shadow() -> void:
 			"Medium":
 				q = 2
 			"High":
-				q = 3
-			"Ultra":
 				q = 4
-		ProjectSettings.set_setting("rendering/lights_and_shadows/directional_shadow/soft_shadow_filter_quality", q)
+			"Ultra":
+				q = 5
+		RenderingServer.directional_soft_shadow_filter_set_quality(q)  # 运行时实时生效，无需重载
+
+# ---- 贴身阴影框：算“刚好包住角色 + 它投到地面的影子落点”的方向光阴影覆盖范围 ----
+# 返回世界单位；<=0 表示尚未就绪(角色/相机/光没解析到)，调用方忽略不改写。
+# 机理：8192 阴影图被压进“角色+影子落点”这片最小世界范围 → 每世界单位纹素数最高 → 桌面/投远影子都最锐利。
+func _compute_tight_max_distance() -> float:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null or _sun == null:
+		return 0.0
+	# 角色网格懒解析(模型在 ModelRoot._ready 构建，树序已保证存在；仍容错重试)
+	if _char_mesh == null:
+		var mr = get_parent().get_node_or_null("ModelRoot")
+		if mr != null and mr.get_child_count() > 0:
+			_char_mesh = _find_char_mesh(mr)
+	if _char_mesh == null:
+		return 0.0
+	var local_aabb: AABB = _char_mesh.get_aabb()
+	var aabb: AABB = _char_mesh.global_transform * local_aabb
+	if aabb.size.length() < 0.001:
+		return 0.0
+	var center: Vector3 = aabb.get_center()    # 世界空间角色中心
+	var half_h := aabb.size.y * 0.5
+	var top := center + Vector3(0.0, half_h, 0.0)    # 角色头顶(世界)
+	var base := center - Vector3(0.0, half_h, 0.0)   # 角色脚底(世界)
+	# 地面高度(影子落点所在平面)；无地面节点则取脚底
+	var ground_y := base.y
+	if _ground != null:
+		ground_y = _ground.global_position.y
+	# 光照行进方向(从光指向场景)：world_dir 是“指向光源”(光的 +Z)，取反得行进向
+	var world_dir: Vector3 = (_sun.global_transform.basis * Vector3(0, 0, 1)).normalized()
+	var travel := -world_dir                   # 指向场景(一般向下)
+	# 把头顶沿光照方向投到地面，得到影子最远落点
+	var landing := top
+	if abs(travel.y) > 1e-4:
+		var t := (ground_y - top.y) / travel.y
+		if t > 0.0:
+			landing = top + travel * t
+	# 取 相机→{头顶, 脚底, 影子落点} 的最远距离，作为阴影覆盖范围(沿视锥深度)
+	var cam_p := cam.global_position
+	var d_top := cam_p.distance_to(top)
+	var d_base := cam_p.distance_to(base)
+	var d_land := cam_p.distance_to(landing)
+	var md := maxf(d_top, maxf(d_base, d_land)) + shadow_tight_margin
+	md = clampf(md, 15.0, 200.0)              # 太小影子消失、太大无意义
+	return md
+
+# 递归找第一个网格实例(MeshInstance3D 已含其子类 SkinnedMesh3D)作为角色 AABB 来源
+func _find_char_mesh(from: Node) -> VisualInstance3D:
+	if from is MeshInstance3D:
+		return from as VisualInstance3D
+	for c in from.get_children():
+		var r := _find_char_mesh(c)
+		if r != null:
+			return r
+	return null
 
 # 景深（DOF）：Godot 4.7 无原生 Environment DOF，故用自定义全屏后处理。
 # 首次调用时建一个最上层 CanvasLayer + ColorRect（挂 dof_effect.gdshader），之后每帧把面板参数写进去；
