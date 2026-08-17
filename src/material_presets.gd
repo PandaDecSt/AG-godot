@@ -442,6 +442,11 @@ func clear_role_override(pack: String, role: String) -> void:
 func apply_role(mat: ShaderMaterial, pack: String, role: String) -> void:
 	var p: Dictionary = get_role_params(pack, role)
 	if role == "default" or p.is_empty():
+		# 默认/未归类材质：强制套用【中性亮色阶】，不再保留 PMX 自带/兜底色阶。
+		# 根因(2026-08-16 排查)：某些 PMX 自带 toon 贴图在亮端仍偏暗，而该材质未被归类
+		# （role=default）时 apply_role 不动 toon_tex，于是受光面(G/toonT 亮)在 B(色阶采样色)
+		# 仍采样到暗色 → 形成\"该受光却有一块孤立阴影\"的暗块。中性亮色阶确保亮端=白。
+		mat.set_shader_parameter("toon_tex", bake_ramp_from_colors([[0.45, 0.45, 0.45], [0.78, 0.78, 0.78], [1.0, 1.0, 1.0]]))
 		mat.set_shader_parameter("mat_saturation", 1.0)
 		mat.set_shader_parameter("mat_value", 1.0)
 		mat.set_shader_parameter("sphere_strength", 1.0)

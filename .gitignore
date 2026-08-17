@@ -24,3 +24,6 @@ desktop.ini
 
 # GDExtension 被覆盖时编辑器留下的旧 dll 备份
 addons/mmd_phys_ext/bin/~*
+
+# Godot MCP 插件运行时截图缓存（调试中间产物，不入库）
+addons/godot_mcp/cache/

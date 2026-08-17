@@ -165,19 +165,24 @@ void light() {
 	} else if (debug_mode == 4) {
 		DIFFUSE_LIGHT = vec3(ATTENUATION);   // 阴影衰减可视化：1=无阴影(白) 0=全阴影(黑)
 		SPECULAR_LIGHT = vec3(0.0);
+	} else if (debug_mode == 5) {
+		// 高光色视图：直接输出材质 specular_color（常量），确诊此材质高光色是否为黑。
+		// 全黑→specular_color=0（模型无高光，所有高光视图必然全黑，与那块无关）；
+		// 有色→之前全黑只是高光点太稀疏(视角相关)，高光本身存在。
+		DIFFUSE_LIGHT = specular_color;
+		SPECULAR_LIGHT = vec3(0.0);
 	} else {
 		// --- 视图空间 toon+阴影（点积旋转不变，等价于原版世界空间）---
-		float ndl = dot(N, L);
-	// 阴影：ATTENUATION 是方向光阴影衰减(1=无阴影, 0=全阴影)。消硬缝对齐原版 shadow.ts：
-	//   背光面 ndl<0 时 smoothstep(0,0.35,ndl)→0，强制全阴影，避免背光面因 shadow map 边缘漏出亮缝。
-	float vis = ATTENUATION;
-	vis = min(vis, smoothstep(0.0, 0.35, ndl));
-	// toon 折 shadow：对齐 AfterglowWeb main-fs.ts，阴影区 shadowedNL→负 → toonT=0 → 取 toon 最暗端。
-	float shadowedNL = min(ndl, vis * 2.0 - 1.0);
-	float toonT = clamp(shadowedNL * 0.5 + 0.5, 0.0, 1.0);
-	// 真实 toon 贴图暗端可能近 0，背光面只剩 ambient，保底 0.25 避免死黑。
-	// toon 终止线抗闪（对齐 reze ramp_constant_edge_aa）：对 toon 坐标做屏空间超采样，
-	// 用 fwidth(toonT) 估出 1 像素的 toon 坐标跨度，在终止线两侧各取半步取平均 → 平滑闪烁的明暗交界。
+		float ndl = max(dot(N, L), 0.0);                  // reze: max(dot(N,L),0) 绝不取负
+	// ── reze 核心对齐(2026-08-16) ───────────────────────────────
+	// reze 真实公式: f = max(dot(N,L),0) * shadow + ambient
+	//   · 绝不取负（背光直接算0，不会变负暗化）
+	//   · 阴影(shadow)是「乘」进来的（ATTENUATION: 1=无阴影 0=全阴影）
+	//   · ambient 抬底，避免背光/阴影面死黑
+	// 映射到 toon_tex 坐标(0..1)：受光(ndl*ATT=1)→1(亮端)；背光/阴影(ndl*ATT=0)→ambientFloor(中段，不死黑)
+	float ambientFloor = clamp(dot(ambient_color, vec3(0.299, 0.587, 0.114)), 0.0, 0.35);
+	float toonT = clamp(ambientFloor + ndl * ATTENUATION * (1.0 - ambientFloor), 0.0, 1.0);
+	// toon 终止线抗闪（对齐 reze ramp_constant_edge_aa）：下面采样块用 fwidth(toonT) 屏空间超采样平滑交界。
 	vec3 toonShade;
 	if (toon_edge_aa > 0.5) {
 		float aaw = max(fwidth(toonT), 1e-4) * 1.5;
@@ -187,6 +192,13 @@ void light() {
 	} else {
 		toonShade = max(texture(toon_tex, vec2(toonT, 0.5)).rgb, vec3(0.25));
 	}
+	// reze 阴影观感：暗部不是色阶饱和暗红，而是「贴图压暗(≈×0.42)」的肤色。
+	// 用 toonT 低(暗部)时把 toonShade 朝 baseColor 压暗色偏，中和原色阶的饱和暗红 → 暗块变「暗肤色」。
+	// （对齐 reze body 的 shadow_tint: hue_sat(饱和×2, value=0.35)，此处用 baseColor×0.42 近似，不改 toon_tex 系统）
+	float darkW = 1.0 - smoothstep(0.25, 0.55, toonT);    // 暗部=1 亮部=0（对齐 reze 阴影端）
+	vec3 shadowTint = baseColor * 0.42;                   // 简化 reze shadow_tint(value≈0.35，叠 mat_value)
+	toonShade = mix(toonShade, shadowTint, darkW * 0.7);
+	// 注：reze 阴影已通过 toonT(ndl*ATT 乘入)进色阶暗端，不再额外中性压暗（避免把受光面压成硬暗块）。
 
 	vec3 nprDiffuse = baseColor * toonShade;                                // TOON：baseColor * toonShade
 	vec3 H = normalize(V + L);
@@ -226,7 +238,8 @@ void light() {
 		}
 	}
 
-		color *= mix(0.55, 1.0, vis);   // 阴影区整体再压暗，强化自阴影对比（无阴影区不变）
+		// reze 无阴影后乘压暗（阴影只通过 shadow_tint 进色阶），这里同样不再二次压暗——
+		// 二次压暗会把中性 0.35 阴影再压到 ~0.19，重新变回"深色块"。
 		vec3 hdr = color * exposure;
 		// 色调映射：filmic(Hable 曲线，对齐 AG) 或 standard(直出，对齐 WuWa)。
 		vec3 ldr = (tonemap_mode == 1) ? filmicTonemap(hdr) : clamp(hdr, vec3(0.0), vec3(1.0));
@@ -234,7 +247,20 @@ void light() {
 		// grade 分色调：暗部→grade_shadow_tint，亮部→grade_highlight_tint（对齐 reze grades.json）。
 		float gl = dot(graded, vec3(0.2126, 0.7152, 0.0722));
 		graded += mix(grade_shadow_tint, grade_highlight_tint, smoothstep(0.2, 0.85, gl));
-		DIFFUSE_LIGHT = max(graded, vec3(0.0));
+		if (debug_mode == 6) {
+			// toon 明暗坐标灰度(toonT)：看"决定明暗的浮点坐标"(0~1)。
+			// 那块暗→被 toon/diffuse 压暗(根因在 toon 计算 ndl/terminator/fold)；
+			// 那块亮→根因在最终合成/tonemap/色彩分级或 toon_tex 采样。
+			DIFFUSE_LIGHT = vec3(toonT);
+		} else if (debug_mode == 7) {
+			// toon 色阶采样颜色(toonShade)：看 toon_tex 在每点实际采到的颜色(=nprDiffuse/baseColor)。
+			// 关键鉴别：G(6)亮但本视图(7)暗 → 根因在该材质的 toon_tex 色阶贴图在该 toonT 处采样为暗
+			//   (不同材质各自有独立色阶：可能是身体/衣/饰材质分配到了不合适的 ramp，或 ramp 贴图本身坏)。
+			// 本视图亮→色阶正常，暗块在 toonShade 之外(最终合成/tonemap/后处理)。
+			DIFFUSE_LIGHT = toonShade;
+		} else {
+			DIFFUSE_LIGHT = max(graded, vec3(0.0));
+		}
 		SPECULAR_LIGHT = vec3(0.0);
 	}
 }

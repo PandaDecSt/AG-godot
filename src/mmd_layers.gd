@@ -38,10 +38,13 @@ extends Node
 #   本场景用自定义着色器 + 相机自由旋转，默认 MSAA 4x；不列 TAA（时域累积在相机移动时会产生鬼影）。
 @export_enum("Disabled", "MSAA 2x", "MSAA 4x", "MSAA 8x", "FXAA", "SMAA") var aa_mode := "MSAA 4x"
 # 柔阴影（挂 SunLight + 项目设置）：
-@export_range(0.0, 5.0, 0.1) var shadow_softness := 0.0   # 方向光区域光大小=半影宽度：0=硬阴影(边缘锐利)，越大阴影边缘越柔（实时生效）
-@export_range(0.0, 0.5, 0.01) var shadow_bias := 0.3      # 阴影偏移：过小=自阴影痤疮(acne，点状噪点)，过大=悬浮(peter-panning)（实时生效）
+@export_range(0.0, 5.0, 0.1) var shadow_softness := 1.5   # 方向光区域光大小=半影宽度：0=硬阴影(边缘锐利)，越大阴影边缘越柔（实时生效）。脸部自阴影默认给一点柔和半影，遮住低分辨率纹素边
+@export_range(0.0, 0.5, 0.01) var shadow_bias := 0.5      # 阴影偏移：过小=自阴影痤疮(acne，点状噪点)，过大=悬浮(peter-panning)（实时生效）。开柔阴影后 PCF 跨纹素采样，需比硬阴影更大的 bias 才能压住黑点
 @export_range(0.0, 2.0, 0.05) var shadow_normal_bias := 0.9   # 法线偏移：对骨骼蒙皮曲面消 acne 特别有效（实时生效）
-@export_enum("Off", "Low", "Medium", "High", "Ultra") var shadow_quality := "Medium"   # PCF 采样质量（项目设置，改后可能需 Reload 当前项目生效）
+@export_enum("Off", "Low", "Medium", "High", "Ultra") var shadow_quality := "High"   # PCF 采样质量（项目设置，改后可能需 Reload 当前项目生效）。脸部自阴影默认 High，减少块状噪点
+# 阴影分辨率 + 覆盖范围（方向光阴影尺寸是【项目级设置】，不是逐光源属性；本工程已 8192=最大）：
+@export_enum("2048", "4096", "8192") var shadow_texture_size := "8192"   # 方向光阴影图尺寸(项目设置)：越大脸部纹素越密、越清晰（占显存，单角色 8192 足够；降 4096 可省显存）
+@export_range(20.0, 200.0, 5.0) var shadow_max_distance := 60.0   # 方向光阴影覆盖范围(世界单位)：越小越把分辨率集中到角色附近，脸部自阴影越锐利（实时生效）
 @export var ground_enabled := true       # 显示/隐藏接收阴影的地面（角色投影落其上；F5 想只看角色可取消勾选）
 
 # 合成顺序：图层 ID 的排列，越靠前越先合成（数组长度保持 5，内容 0..4 互不重复）。
@@ -57,6 +60,8 @@ var _last_soft := -1.0
 var _last_bias := -1.0
 var _last_nb := -1.0
 var _last_sq := ""
+var _last_ts := ""
+var _last_md := -1.0
 const DOF_EFFECT := preload("res://src/dof_compositor.gd")
 var _dof_effect: DOFEffect = null
 
@@ -167,6 +172,18 @@ func _apply_shadow() -> void:
 		if shadow_normal_bias != _last_nb:
 			_sun.shadow_normal_bias = shadow_normal_bias
 			_last_nb = shadow_normal_bias
+		# 阴影图分辨率：方向光是【整屏共享】阴影图，尺寸是项目级设置(非逐光源属性)，走 ProjectSettings 实时改。
+		if shadow_texture_size != _last_ts:
+			var ts := 2048
+			match shadow_texture_size:
+				"4096": ts = 4096
+				"8192": ts = 8192
+			ProjectSettings.set_setting("rendering/lights_and_shadows/directional_shadow/size", ts)
+			_last_ts = shadow_texture_size
+		# 阴影覆盖范围：方向光逐光源属性，实时生效，把 8192 分辨率集中到角色附近。
+		if shadow_max_distance != _last_md:
+			_sun.directional_shadow_max_distance = shadow_max_distance
+			_last_md = shadow_max_distance
 	if shadow_quality != _last_sq:
 		_last_sq = shadow_quality
 		var q := 2

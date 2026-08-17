@@ -168,12 +168,16 @@ func _ready() -> void:
 		_sun = get_tree().get_first_node_in_group("sun") as DirectionalLight3D
 	# 运行期强制太阳角度+阴影参数（关键：避免"只 F5 不重开"导致 .tscn 改动不生效）。
 	# 这样无论 Godot 有没有重载场景，F5 后太阳一定是 65° 仰角、阴影开启。
+	# 注：方向光阴影尺寸是【项目级设置】(rendering/lights_and_shadows/directional_shadow/size)，本工程已设 8192(最大)，
+	#     不是逐光源属性(逐光源 shadow_texture_size 只存在于点光/聚光)，故这里不能给 _sun 设、只能在面板走 ProjectSettings。
+	#     脸部自阴影质量的关键杠杆是：收紧覆盖范围(120→60，把 8192 分辨率集中到角色附近) + 加一点半影(1.5) + 提高 PCF 质量。
 	if _sun != null:
 		_sun.rotation_degrees = Vector3(-65, 0, 0)
 		_sun.shadow_enabled = true
-		_sun.light_angular_distance = 0.0
+		_sun.directional_shadow_max_distance = 60.0
+		_sun.light_angular_distance = 1.5
 		# 与面板(LayerController)默认值保持一致，避免 _ready 时序把 bias 打回旧值造成首帧痤疮。
-		_sun.shadow_bias = 0.3
+		_sun.shadow_bias = 0.5
 		_sun.shadow_normal_bias = 0.9
 
 	# ---- 把模型中心/尺寸写入 meta，供自由相机(free_camera.gd)自动取景 ----
@@ -255,7 +259,7 @@ func _ready() -> void:
 	if AUTO_DEBUG_SHOTS:
 		_capture_debug_shots()
 
-	# 运行态 HUD：现代化面板系统（左上=播放/外观，右上=材质预设；H 键可整体隐藏）
+	# 运行态 HUD：现代化面板系统（左上=播放/外观，右上=材质预设；Y 键可整体隐藏）
 	_init_hud()
 
 
@@ -360,6 +364,68 @@ func _unhandled_input(event: InputEvent) -> void:
 					mat.set_shader_parameter("debug_mode", 4 if cur == 0 else 0)
 				var shown = _mats[0].get_shader_parameter("debug_mode") if (_mats.size() > 0 and _mats[0] != null) else -1
 				print("F9 debug_mode -> ", shown, " (4=看阴影衰减视图/点状即acne确诊; 0=正常)")
+			KEY_F7:
+				# 纯贴图视图(debug_mode=1)：直接输出 baseColor（贴图原色 × tint × mat_value）。
+				# 用途：若角色表面某块在正常渲染下是暗的、但 F9(阴影衰减)下是白的(ATT=1)，
+				# 说明暗块与阴影无关、也非法线/明暗公式(ATT=1 时 fold 会强制拉亮)，
+				# 而是 baseColor 本身在该区域是暗的(贴图/UV 错位/采到暗区)。按 F7 一眼确认。
+				for mat in _mats:
+					if mat == null:
+						continue
+					var cur = mat.get_shader_parameter("debug_mode")
+					if cur == null:
+						cur = 0
+					mat.set_shader_parameter("debug_mode", 1 if cur == 0 else 0)
+				var d7 = _mats[0].get_shader_parameter("debug_mode") if (_mats.size() > 0 and _mats[0] != null) else -1
+				print("F7 debug_mode -> ", d7, " (1=纯贴图: 那块也暗/黑=贴图或UV问题; 0=正常)")
+			KEY_F6:
+				# 法线视图(debug_mode=3)：N*0.5+0.5 输出。
+				# 用途：看胸顶/臂顶的法线朝向是否异常(朝内/背离)。
+				# 正常迎光面应显示偏亮的颜色(法线朝外)，若该块明显偏暗/朝向异常=法线朝内。
+				for mat in _mats:
+					if mat == null:
+						continue
+					var cur = mat.get_shader_parameter("debug_mode")
+					if cur == null:
+						cur = 0
+					mat.set_shader_parameter("debug_mode", 3 if cur == 0 else 0)
+				var d8 = _mats[0].get_shader_parameter("debug_mode") if (_mats.size() > 0 and _mats[0] != null) else -1
+				print("F6 debug_mode -> ", d8, " (3=法线视图: 胸顶/臂顶法线偏暗=朝内)")
+			KEY_H:
+				# 高光色视图(debug_mode=5)：输出材质 specular_color 常量（非视角相关高光点）。
+				# 用途：确诊"那块本该是高光"是否成立。全黑=specular_color=0(模型无高光，所有高光视图必然黑，与那块无关)；
+				# 有色=高光存在，之前全黑只是高光点太稀疏(视角相关)。
+				for mat in _mats:
+					if mat == null: continue
+					var cur = mat.get_shader_parameter("debug_mode")
+					if cur == null: cur = 0
+					mat.set_shader_parameter("debug_mode", 5 if cur == 0 else 0)
+				var dh = _mats[0].get_shader_parameter("debug_mode") if (_mats.size() > 0 and _mats[0] != null) else -1
+				print("H debug_mode -> ", dh, " (5=高光视图: 那块亮=有高光; 黑=specular无贡献)")
+			KEY_G:
+				# toon 明暗灰度视图(debug_mode=6)：直接显示 toon 明暗坐标(0=最暗 1=最亮)。
+				# 用途：看胸顶/臂顶暗块在"决定明暗的漫反射层"里是暗还是亮。
+				# 该块暗→被 toon/diffuse 压暗(根因在 ndl/terminator/fold 计算)；
+				# 该块亮→根因在最终合成/tonemap/色彩分级，不在明暗计算。
+				for mat in _mats:
+					if mat == null: continue
+					var cur = mat.get_shader_parameter("debug_mode")
+					if cur == null: cur = 0
+					mat.set_shader_parameter("debug_mode", 6 if cur == 0 else 0)
+				var dg = _mats[0].get_shader_parameter("debug_mode") if (_mats.size() > 0 and _mats[0] != null) else -1
+				print("G debug_mode -> ", dg, " (6=toon灰度: 那块暗=toon压暗; 亮=合成/tonemap问题)")
+			KEY_B:
+				# toon 色阶采样色视图(debug_mode=7)：显示 toon_tex 在每点实际采到的颜色(toonShade)。
+				# 关键鉴别：G(6)亮但本视图(7)暗 → 根因在该材质的 toon_tex 色阶贴图在该 toonT 处采样为暗
+				#   (PMX 不同材质各自有独立色阶 ramp，可能是身体/衣/饰分配到不合适的 ramp，或 ramp 贴图坏)。
+				# 本视图亮→toon 色阶采样正常，暗块在 toonShade 之外(最终合成/tonemap/后处理)。
+				for mat in _mats:
+					if mat == null: continue
+					var cur = mat.get_shader_parameter("debug_mode")
+					if cur == null: cur = 0
+					mat.set_shader_parameter("debug_mode", 7 if cur == 0 else 0)
+				var db = _mats[0].get_shader_parameter("debug_mode") if (_mats.size() > 0 and _mats[0] != null) else -1
+				print("B debug_mode -> ", db, " (7=toonShade采样色: G亮但本视图暗=该材质toon_tex色阶坏; 都亮=色阶外的问题)")
 			KEY_SPACE:
 				if _player != null:
 					_player.toggle_play()
@@ -381,9 +447,9 @@ func _unhandled_input(event: InputEvent) -> void:
 					if not _player.morph_enabled:
 						_player.clear_all_morphs()
 					print("M 表情 -> ", _player.morph_enabled)
-			KEY_H:
+			KEY_Y:
 				_on_hud_toggle()
-				print("H HUD 面板 -> ", "显示" if _hud_visible else "隐藏")
+				print("Y HUD 面板 -> ", "显示" if _hud_visible else "隐藏")
 
 
 func _update_light() -> void:
@@ -636,7 +702,7 @@ func _build_left_dock(vb: VBoxContainer) -> void:
 			if idx >= 0 and idx < grades.size(): _apply_preset(_cur_pack, grades[idx]))
 	_build_phys_dock(vb)
 	var hint := Label.new()
-	hint.text = "空格=播/停  R=重播  I=IK  M=表情  H=面板"
+	hint.text = "空格=播/停 R=重播 I=IK M=表情 Y=面板  B/G=toon调试 H=高光 F7=贴图 F6=法线 F9=阴影"
 	hint.add_theme_color_override("font_color", Color(0.7, 0.7, 0.78))
 	hint.add_theme_font_size_override("font_size", 11)
 	vb.add_child(hint)
