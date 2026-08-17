@@ -64,6 +64,7 @@ extends Node
 #   代价：Godot 阴影范围绑定相机视锥，故密度上限仍受“相机离角色多远”卡着——相机近时最干净，相机远时效果有限。
 @export var shadow_tight_fit := true   # 勾=自动贴身收紧(覆盖下方手动值)；取消=用上方 shadow_max_distance 手动值
 @export_range(1.0, 20.0, 0.5) var shadow_tight_margin := 4.0   # 贴身余量(世界单位)：防影子落点被切边；越小密度越高但越易丢远端影子
+@export_range(1.0, 5.0, 0.1) var shadow_tight_bias_boost := 2.0   # 贴身模式 bias 补偿倍数：max_distance 收紧→阴影图深度精度升高→曲面自遮挡(acne)更易显，按(60/fit_md)比例×此倍数放大 bias 压住(手动模式不受影响)
 @export var ground_enabled := true       # 显示/隐藏接收阴影的地面（角色投影落其上；F5 想只看角色可取消勾选）
 
 # 合成顺序：图层 ID 的排列，越靠前越先合成（数组长度保持 5，内容 0..4 互不重复）。
@@ -80,6 +81,8 @@ var _last_soft := -1.0
 var _last_blur := -1.0
 var _last_bias := -1.0
 var _last_nb := -1.0
+var _tight_prec := 1.0           # 贴身模式精度补偿因子(仅 tight 模式>1)；bias 每帧按其放大以压 acne
+var _last_tight_prec := 1.0
 var _last_sq := ""
 var _last_ts := ""
 var _last_md := -1.0
@@ -216,12 +219,14 @@ func _apply_shadow() -> void:
 		if shadow_blur != _last_blur:
 			_sun.shadow_blur = shadow_blur
 			_last_blur = shadow_blur
-		if shadow_bias != _last_bias:
-			_sun.shadow_bias = shadow_bias
+		if shadow_bias != _last_bias or _tight_prec != _last_tight_prec:
+			_sun.shadow_bias = shadow_bias * _tight_prec
 			_last_bias = shadow_bias
-		if shadow_normal_bias != _last_nb:
-			_sun.shadow_normal_bias = shadow_normal_bias
+			_last_tight_prec = _tight_prec
+		if shadow_normal_bias != _last_nb or _tight_prec != _last_tight_prec:
+			_sun.shadow_normal_bias = shadow_normal_bias * _tight_prec
 			_last_nb = shadow_normal_bias
+			_last_tight_prec = _tight_prec
 		# 阴影图分辨率：方向光【整屏共享】阴影图；尺寸用 RenderingServer 运行时接口直接设，实时生效、无需改 project.godot、无需重载。
 		if shadow_texture_size != _last_ts:
 			var ts := 8192
@@ -240,10 +245,17 @@ func _apply_shadow() -> void:
 			_last_tight = shadow_tight_fit
 		if shadow_tight_fit:
 			var fit_md := _compute_tight_max_distance()
-			if fit_md > 0.0 and abs(fit_md - _last_fit_md) > 0.5:
-				_sun.directional_shadow_max_distance = fit_md
-				_last_fit_md = fit_md
+			if fit_md > 0.0:
+				if abs(fit_md - _last_fit_md) > 0.5:
+					_sun.directional_shadow_max_distance = fit_md
+					_last_fit_md = fit_md
+				# 精度比补偿：基准 60；max_distance 越小→阴影图深度精度越高→曲面自遮挡(acne)越易显，
+				# 按此比例放大 bias(再乘用户 boost)压住，避免胸部等凸起曲面冒异常自阴影块。
+				_tight_prec = clampf(60.0 / maxf(fit_md, 1.0), 1.0, 6.0) * shadow_tight_bias_boost
+			else:
+				_tight_prec = 1.0
 		else:
+			_tight_prec = 1.0
 			if shadow_max_distance != _last_md:
 				_sun.directional_shadow_max_distance = shadow_max_distance
 				_last_md = shadow_max_distance
